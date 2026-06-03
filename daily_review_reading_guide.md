@@ -307,11 +307,21 @@
 
 ## 14. HTML 日报怎么打开
 
-当前 HTML 示例日报位于：
+最推荐打开日报归档入口：
+
+```text
+reports/daily_review/index.html
+```
+
+这个页面会列出已经生成的历史 HTML 日报，适合回看过去判断。
+
+单日报告示例位于：
 
 ```text
 reports/daily_review/a_share_daily_review_2026-06-01.html
 ```
+
+每份 HTML 日报顶部都有“历史日报”下拉框，可以直接切换到其他日期。
 
 Markdown 原文位于：
 

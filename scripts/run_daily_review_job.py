@@ -53,12 +53,13 @@ def main() -> None:
         pro,
         use_lifecycle_cache=not args.no_lifecycle_cache,
     )
-    html_path = render_html_for_trade_date(trade_date)
+    html_path, index_path = render_html_for_trade_date(trade_date)
 
     print("Daily review generated:")
     for path in paths:
         print(path)
     print(html_path)
+    print(index_path)
     print(f"Concept cache rows: {concept_stats.get('concept_daily_rows', 'NA')}")
     print(f"Concept member rows: {concept_member_stats.get('concept_member_rows', 'NA')}")
 
@@ -233,13 +234,14 @@ def validate_required_index_data(pro, trade_date: str) -> None:
         raise SystemExit(f"Required index data incomplete. Refusing to generate report.\n- {detail}")
 
 
-def render_html_for_trade_date(trade_date: str) -> Path:
+def render_html_for_trade_date(trade_date: str) -> tuple[Path, Path]:
     report_date = pd.to_datetime(trade_date).strftime("%Y-%m-%d")
     source = REPORT_DIR / f"a_share_daily_review_{report_date}.md"
     output = source.with_suffix(".html")
     markdown = source.read_text(encoding="utf-8")
     output.write_text(html_review.render_html(markdown, source), encoding="utf-8")
-    return output
+    index_path = html_review.render_report_index()
+    return output, index_path
 
 
 if __name__ == "__main__":

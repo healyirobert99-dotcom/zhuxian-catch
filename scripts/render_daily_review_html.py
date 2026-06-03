@@ -16,7 +16,9 @@ def main() -> None:
     output = Path(args.output).resolve() if args.output else source.with_suffix(".html")
     markdown = source.read_text(encoding="utf-8")
     output.write_text(render_html(markdown, source), encoding="utf-8")
+    index_path = render_report_index()
     print(output)
+    print(index_path)
 
 
 def parse_args() -> argparse.Namespace:
@@ -61,6 +63,7 @@ def render_html(markdown: str, source: Path) -> str:
     body_html = markdown_to_html(body_md)
     appendix_html = render_appendix(appendix_md) if appendix_md.strip() else ""
     source_link = html.escape(source.name)
+    archive_select = build_report_selector(report_date)
     return f"""<!doctype html>
 <html lang="zh-CN">
 <head>
@@ -134,6 +137,28 @@ def render_html(markdown: str, source: Path) -> str:
       text-decoration: none;
     }}
     .button:hover {{ border-color: var(--accent); color: var(--accent); }}
+    .select-wrap {{
+      display: inline-flex;
+      align-items: center;
+      gap: 8px;
+      border: 1px solid var(--line-strong);
+      background: var(--paper);
+      border-radius: 6px;
+      padding: 7px 10px;
+      color: var(--muted);
+      font-size: 13px;
+    }}
+    .select-wrap select {{
+      appearance: none;
+      border: 0;
+      background: transparent;
+      color: var(--ink);
+      font: inherit;
+      font-size: 13px;
+      min-width: 160px;
+      cursor: pointer;
+    }}
+    .select-wrap select:focus {{ outline: 2px solid var(--accent-soft); outline-offset: 2px; }}
     article > section {{
       margin: 28px 0;
       padding: 18px;
@@ -262,6 +287,8 @@ def render_html(markdown: str, source: Path) -> str:
           <h1>{html.escape(title)}</h1>
           <p class="subtitle">主线识别与研究闭环系统。用于观察市场环境、行业生命周期、主线延续和退潮风险，不提供交易指令。</p>
           <div class="toolbar">
+            {archive_select}
+            <a class="button" href="./index.html">日报归档</a>
             <a class="button" href="./{source_link}">查看 Markdown 原文</a>
             <button class="button" type="button" onclick="window.print()">打印 / 导出 PDF</button>
           </div>
@@ -280,6 +307,136 @@ def render_html(markdown: str, source: Path) -> str:
 </body>
 </html>
 """
+
+
+def render_report_index() -> Path:
+    reports = discover_reports()
+    index_path = REPORT_DIR / "index.html"
+    rows = "\n".join(
+        f"""
+        <tr>
+          <td><a href="./{html.escape(item['html_name'])}">{html.escape(item['date'])}</a></td>
+          <td>{html.escape(item['title'])}</td>
+          <td><a href="./{html.escape(item['md_name'])}">Markdown</a></td>
+        </tr>
+        """
+        for item in reports
+    )
+    latest_link = f"./{html.escape(reports[0]['html_name'])}" if reports else "#"
+    latest_text = html.escape(reports[0]["date"]) if reports else "暂无日报"
+    index_path.write_text(
+        f"""<!doctype html>
+<html lang="zh-CN">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>A 股主线研究日报归档</title>
+  <style>
+    :root {{
+      --bg: #f6f5f1;
+      --paper: #ffffff;
+      --ink: #20231f;
+      --muted: #697066;
+      --line: #dedbd2;
+      --accent: #1d5c56;
+      --shadow: 0 14px 36px rgba(29, 31, 27, 0.07);
+      --radius: 8px;
+      --font: "IBM Plex Sans", "Source Han Sans SC", "Noto Sans CJK SC", "PingFang SC", sans-serif;
+    }}
+    * {{ box-sizing: border-box; }}
+    body {{ margin: 0; background: var(--bg); color: var(--ink); font-family: var(--font); line-height: 1.58; }}
+    main {{ max-width: 1120px; margin: 0 auto; padding: 36px 24px 56px; }}
+    header {{ border-bottom: 1px solid var(--line); padding-bottom: 22px; margin-bottom: 24px; }}
+    .kicker {{ color: var(--muted); font-size: 13px; font-weight: 650; letter-spacing: .06em; text-transform: uppercase; }}
+    h1 {{ margin: 8px 0 10px; font-size: clamp(32px, 4vw, 52px); line-height: 1.05; }}
+    p {{ color: var(--muted); margin: 8px 0; }}
+    .toolbar {{ display: flex; gap: 10px; flex-wrap: wrap; margin-top: 18px; }}
+    .button {{
+      border: 1px solid #c8c3b7;
+      background: var(--paper);
+      color: var(--ink);
+      border-radius: 6px;
+      padding: 9px 12px;
+      font: inherit;
+      font-size: 13px;
+      cursor: pointer;
+      text-decoration: none;
+    }}
+    .button:hover {{ border-color: var(--accent); color: var(--accent); }}
+    .panel {{
+      background: var(--paper);
+      border: 1px solid var(--line);
+      border-radius: var(--radius);
+      box-shadow: var(--shadow);
+      overflow: hidden;
+    }}
+    table {{ width: 100%; border-collapse: collapse; }}
+    th, td {{ padding: 12px 14px; border-bottom: 1px solid var(--line); text-align: left; font-size: 14px; }}
+    th {{ background: #f7f6f2; color: #4b5048; font-size: 12px; }}
+    tr:last-child td {{ border-bottom: 0; }}
+    a {{ color: var(--accent); text-decoration: none; font-weight: 650; }}
+    a:hover {{ text-decoration: underline; }}
+    .empty {{ padding: 18px; color: var(--muted); }}
+  </style>
+</head>
+<body>
+  <main>
+    <header>
+      <div class="kicker">Daily Review Archive</div>
+      <h1>A 股主线研究日报归档</h1>
+      <p>这里汇总已经生成的 HTML 日报，方便随时回看历史判断和生命周期变化。</p>
+      <div class="toolbar">
+        <a class="button" href="{latest_link}">打开最新日报：{latest_text}</a>
+      </div>
+    </header>
+    <section class="panel">
+      {"<div class='empty'>暂无日报。</div>" if not reports else f"<table><thead><tr><th>日期</th><th>标题</th><th>原文</th></tr></thead><tbody>{rows}</tbody></table>"}
+    </section>
+  </main>
+</body>
+</html>
+""",
+        encoding="utf-8",
+    )
+    return index_path
+
+
+def build_report_selector(current_date: str) -> str:
+    reports = discover_reports()
+    if not reports:
+        return ""
+    options = []
+    for item in reports:
+        selected = " selected" if item["date"] == current_date else ""
+        label = html.escape(item["date"])
+        options.append(f'<option value="./{html.escape(item["html_name"])}"{selected}>{label}</option>')
+    return (
+        '<label class="select-wrap">历史日报 '
+        '<select aria-label="选择历史日报" onchange="if (this.value) window.location.href=this.value">'
+        + "".join(options)
+        + "</select></label>"
+    )
+
+
+def discover_reports() -> list[dict[str, str]]:
+    items = []
+    for md_path in sorted(REPORT_DIR.glob("a_share_daily_review_*.md"), reverse=True):
+        if md_path.stem.endswith("_lifecycle"):
+            continue
+        match = re.search(r"(\d{4}-\d{2}-\d{2})", md_path.stem)
+        if not match:
+            continue
+        html_path = md_path.with_suffix(".html")
+        title = extract_title(md_path.read_text(encoding="utf-8"))
+        items.append(
+            {
+                "date": match.group(1),
+                "title": title,
+                "md_name": md_path.name,
+                "html_name": html_path.name,
+            }
+        )
+    return items
 
 
 def extract_title(markdown: str) -> str:

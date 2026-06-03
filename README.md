@@ -16,8 +16,8 @@
 ## 当前核心文件
 
 - `scripts/generate_daily_review.py`：生成 A 股主线研究日报 Markdown。
-- `scripts/render_daily_review_html.py`：把 Markdown 日报渲染为同名 HTML。
-- `scripts/run_daily_review_job.py`：每日自动化入口，严格补齐增量数据后生成 Markdown + HTML。
+- `scripts/render_daily_review_html.py`：把 Markdown 日报渲染为同名 HTML，并刷新日报归档页。
+- `scripts/run_daily_review_job.py`：每日自动化入口，严格补齐增量数据后生成 Markdown + HTML + 归档入口。
 - `scripts/validate_mainline_early_detection.py`：五年早期主线识别历史验证。
 - `daily_review_reading_guide.md`：每日日报阅读指南。
 - `xiangmu.md`：项目封版交接文档。
@@ -73,6 +73,14 @@ python3 scripts/run_daily_review_job.py
 python3 scripts/render_daily_review_html.py --trade-date 20260601
 ```
 
+渲染后会同步刷新日报归档入口：
+
+```text
+reports/daily_review/index.html
+```
+
+每份 HTML 日报顶部都有“历史日报”下拉框，可直接切换到已生成的历史报告。
+
 生成最近 10 个缓存交易日的日报，用于 T-1 / T-3 / T-5 生命周期复核：
 
 ```bash
@@ -84,6 +92,7 @@ python3 scripts/generate_daily_review.py --recent-days 10 --end-date 20260601
 ```text
 reports/daily_review/a_share_daily_review_YYYY-MM-DD.md
 reports/daily_review/a_share_daily_review_YYYY-MM-DD.html
+reports/daily_review/index.html
 ```
 
 历史日报按日期保留，不覆盖其他日期。
@@ -106,6 +115,7 @@ Codex 自动化任务：
 - 必须补齐当日增量数据；
 - 缺数据不生成日报；
 - Markdown 和 HTML 都按日期保存；
+- 自动刷新 `reports/daily_review/index.html`；
 - 不删除历史日报。
 
 ## 早期主线验证

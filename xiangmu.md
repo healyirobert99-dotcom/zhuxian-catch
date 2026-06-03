@@ -103,7 +103,9 @@ scripts/render_daily_review_html.py
 
 - 将 Markdown 日报渲染为简约 HTML；
 - 保持正文轻量，附录折叠；
-- 同名输出 `.html` 文件。
+- 同名输出 `.html` 文件；
+- 刷新 `reports/daily_review/index.html` 日报归档入口；
+- 每份 HTML 顶部提供“历史日报”下拉框，可切换到已生成的历史报告。
 
 命令：
 
@@ -125,6 +127,7 @@ scripts/run_daily_review_job.py
 - 从 Tushare 获取最近交易日；
 - 严格补齐当日日线、估值快照、主要指数和东方财富概念板块；
 - 数据完整才生成 Markdown + HTML；
+- 每次生成后刷新 HTML 日报归档页；
 - 数据不完整则停止，不输出缺失日报。
 
 命令：
@@ -518,6 +521,7 @@ Codex 自动化：
 - 不允许回退旧缓存凑数；
 - 不允许输出缺失数据日报；
 - Markdown 和 HTML 每日配套生成，HTML 使用 `scripts/render_daily_review_html.py` 的既有模板；
+- 自动刷新 HTML 日报归档入口 `reports/daily_review/index.html`；
 - 历史日报按日期保留。
 
 ## 8. 重要输出路径
@@ -528,6 +532,7 @@ Codex 自动化：
 reports/daily_review/a_share_daily_review_YYYY-MM-DD.md
 reports/daily_review/a_share_daily_review_YYYY-MM-DD.html
 reports/daily_review/a_share_daily_review_YYYY-MM-DD_lifecycle.md
+reports/daily_review/index.html
 ```
 
 日报快照：
@@ -632,6 +637,7 @@ python3 scripts/run_daily_review_job.py
 - 概念 + 行业共振 / 背离验证；
 - 结论卡片四灯机会强度展示；
 - HTML 日报展示；
+- HTML 日报归档页与历史日报下拉；
 - 每日自动化；
 - 严格增量数据校验；
 - T-1 / T-3 / T-5 生命周期复核；
