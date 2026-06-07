@@ -23,6 +23,7 @@
 - `config/catalyst_keywords.csv`：催化复核关键词配置。
 - `data/catalysts/catalyst_titles.csv`：本地新闻/政策/研报/公告标题输入模板。
 - `daily_review_reading_guide.md`：每日日报阅读指南。
+- `daily_review_interpretation_protocol.md`：复盘解读协议，规定大模型语义分析只在解读阶段使用。
 - `xiangmu.md`：项目封版交接文档。
 
 ## 安装
@@ -117,6 +118,24 @@ config/catalyst_keywords.csv
 ```
 
 没有催化标题时，日报仍正常生成，并提示“暂无有效文本数据”。
+
+## 复盘解读语义分析
+
+生成日报时不调用大模型，保证日报可复现、轻量、不中断。
+
+用户要求解读日报时，助手可以基于日报、催化标题/摘要和附录明细做大模型语义分析，用于：
+
+- 识别标题/摘要中的语义主题；
+- 将主题映射到行业、概念和 ETF/中军载体；
+- 判断文本与价格/宽度是否共振或背离；
+- 发现规则层可能漏掉的潜在催化线索；
+- 辅助交易信号质量判断。
+
+具体协议见：
+
+```text
+daily_review_interpretation_protocol.md
+```
 
 生成最近 10 个缓存交易日的日报，用于 T-1 / T-3 / T-5 生命周期复核：
 

@@ -460,6 +460,14 @@ date,source_type,source_name,title,summary,related_industry,related_concept
 
 `summary` 为可选摘要层：有摘要则和标题一起参与关键词/行业/概念匹配；没有摘要不影响日报生成。
 
+日报生成阶段不调用大模型；生成结果必须保持规则化、可复现、轻量。
+
+大模型语义分析只在用户要求复盘解读日报时进行，协议见：
+
+```text
+daily_review_interpretation_protocol.md
+```
+
 日报输出：
 
 - 今日结论卡片新增 `催化复核`；
@@ -473,6 +481,16 @@ date,source_type,source_name,title,summary,related_industry,related_concept
 - 文本热但价格弱：叙事先行，不放大解读；
 - 退潮行业仍有研报热度：警惕叙事滞后；
 - 研报/情绪关键词密集：优先检查是否接近叙事高峰。
+
+解读阶段允许助手做语义映射，例如：
+
+```text
+AI算力 → CPO / 光模块 / 服务器 / 液冷 / PCB / 半导体设备
+半导体周期触底 → 半导体 / 存储芯片 / 先进封装 / 设备材料
+BD出海 → 创新药 / 化学制药 / 医药服务
+```
+
+但语义分析只能解释、归因和发现潜在线索，不能改写日报评级，也不能让文本热度单独触发操作。
 
 ### 5.2 四灯机会强度展示
 
