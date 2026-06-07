@@ -283,9 +283,9 @@ def render_html(markdown: str, source: Path) -> str:
     <main>
       <div class="page">
         <header>
-          <div class="kicker">V0.3 · {html.escape(report_date)}</div>
+          <div class="kicker">V0.4 · {html.escape(report_date)}</div>
           <h1>{html.escape(title)}</h1>
-          <p class="subtitle">主线识别与研究闭环系统。用于观察市场环境、行业生命周期、主线延续和退潮风险，不提供交易指令。</p>
+          <p class="subtitle">主线识别与交易复核闭环系统。用于观察市场环境、行业生命周期、ETF/中军载体和操作复核框架。</p>
           <div class="toolbar">
             {archive_select}
             <a class="button" href="./index.html">日报归档</a>
@@ -300,7 +300,7 @@ def render_html(markdown: str, source: Path) -> str:
           <h2>附录</h2>
           {appendix_html}
         </section>
-        <div class="footer">生成来源：{source_link}。本页面为本地研究报告视图，不构成投资建议。</div>
+        <div class="footer">生成来源：{source_link}。本页面为本地主线交易复核视图，结论依赖当日增量数据与本地缓存完整性。</div>
       </div>
     </main>
   </div>

@@ -2,7 +2,7 @@
 
 本项目当前封版定位：
 
-**主线识别与研究闭环系统。不猜底、不择时、不选股，不输出买卖指令。**
+**主线识别与交易复核闭环系统。核心是识别市场环境、行业/概念主线生命周期，并为板块 beta 策略提供 ETF / 中军载体与可执行复核框架。**
 
 系统目标是经过连续复盘，识别市场环境较好时具有延续性的中高级别主线板块，并把行业主线分为：
 
@@ -17,8 +17,11 @@
 
 - `scripts/generate_daily_review.py`：生成 A 股主线研究日报 Markdown。
 - `scripts/render_daily_review_html.py`：把 Markdown 日报渲染为同名 HTML，并刷新日报归档页。
-- `scripts/run_daily_review_job.py`：每日自动化入口，严格补齐增量数据后生成 Markdown + HTML + 归档入口。
+- `scripts/run_daily_review_manual.py`：手动严格生成入口，补齐增量数据后生成 Markdown + HTML + 归档入口。
+- `scripts/sync_catalysts.py`：自动同步近几日新闻/政策/公告标题，写入催化复核输入文件。
 - `scripts/validate_mainline_early_detection.py`：五年早期主线识别历史验证。
+- `config/catalyst_keywords.csv`：催化复核关键词配置。
+- `data/catalysts/catalyst_titles.csv`：本地新闻/政策/研报/公告标题输入模板。
 - `daily_review_reading_guide.md`：每日日报阅读指南。
 - `xiangmu.md`：项目封版交接文档。
 
@@ -45,13 +48,13 @@ stock_daily: 2021-01-04 到 2026-06-01
 日线行数: 6654434
 ```
 
-每日自动化要求项目根目录 `.env` 或环境变量中存在：
+手动严格生成要求项目根目录 `.env` 或环境变量中存在：
 
 ```bash
 TUSHARE_TOKEN=...
 ```
 
-自动化不允许使用缺失数据生成日报。若当日 `stock_daily`、`stock_daily_basic` 或主要指数数据不完整，任务会失败并报告原因。
+系统不允许使用缺失数据生成日报。若当日 `stock_daily`、`stock_daily_basic` 或主要指数数据不完整，任务会失败并报告原因。
 
 ## 生成日报
 
@@ -61,10 +64,10 @@ TUSHARE_TOKEN=...
 python3 scripts/generate_daily_review.py --trade-date 20260601
 ```
 
-生成最新每日复盘 Markdown + HTML：
+严格补齐增量数据并生成最新每日复盘 Markdown + HTML：
 
 ```bash
-python3 scripts/run_daily_review_job.py
+python3 scripts/run_daily_review_manual.py
 ```
 
 单独把 Markdown 渲染为 HTML：
@@ -80,6 +83,40 @@ reports/daily_review/index.html
 ```
 
 每份 HTML 日报顶部都有“历史日报”下拉框，可直接切换到已生成的历史报告。
+
+## 催化复核输入
+
+日报支持轻量催化复核，用于帮助后续解读交易信号。它不改变主线评级，只解释“价格、宽度、生命周期”背后的政策、产业、资金或研报线索。
+
+手动严格生成日报时会先尝试自动同步最近 5 天标题：
+
+```bash
+python3 scripts/sync_catalysts.py --days 5
+```
+
+同步失败不会阻断行情日报生成，但会在终端输出失败来源，日报继续使用本地已有催化缓存。
+
+把标题追加到：
+
+```text
+data/catalysts/catalyst_titles.csv
+```
+
+字段：
+
+```text
+date,source_type,source_name,title,summary,related_industry,related_concept
+```
+
+`summary` 是可选摘要字段。有摘要时系统会同时扫描标题和摘要；没有摘要时仍按标题正常运行。
+
+关键词配置：
+
+```text
+config/catalyst_keywords.csv
+```
+
+没有催化标题时，日报仍正常生成，并提示“暂无有效文本数据”。
 
 生成最近 10 个缓存交易日的日报，用于 T-1 / T-3 / T-5 生命周期复核：
 
@@ -97,19 +134,7 @@ reports/daily_review/index.html
 
 历史日报按日期保留，不覆盖其他日期。
 
-## 每日自动化
-
-Codex 自动化任务：
-
-```text
-任务名: A股主线研究日报
-任务 ID: a
-频率: 周一到周五 20:30
-工作目录: /Users/Zhuanz/Documents/量化选股
-入口: python3 scripts/run_daily_review_job.py
-```
-
-自动化规则：
+## 手动严格生成规则
 
 - 必须读取 Tushare token；
 - 必须补齐当日增量数据；

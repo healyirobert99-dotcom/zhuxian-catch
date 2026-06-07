@@ -20,6 +20,10 @@ from ashare_a_plus.sqlite_store import SQLiteStore  # noqa: E402
 
 DB_PATH = BASE / "data" / "a_stock_selector.sqlite3"
 REPORT_DIR = BASE / "reports" / "daily_review"
+CONFIG_DIR = BASE / "config"
+CATALYST_DIR = BASE / "data" / "catalysts"
+CATALYST_TITLES_PATH = CATALYST_DIR / "catalyst_titles.csv"
+CATALYST_KEYWORDS_PATH = CONFIG_DIR / "catalyst_keywords.csv"
 SNAPSHOT_DIR = REPORT_DIR / "snapshots"
 LIFECYCLE_CACHE_DIR = REPORT_DIR / "lifecycle_cache"
 MARKET_SNAPSHOT_DIR = REPORT_DIR / "market_snapshots"
@@ -149,7 +153,8 @@ def generate_daily_report(
     stocks = stock_observation_pools(snap, lifecycle)
     yesterday_review = build_yesterday_review(report_date, lifecycle)
     recent_review = build_recent_lifecycle_review(report_date, lifecycle, market["score"])
-    md = render_report(report_date, market, lifecycle, concept_lifecycle, stocks, yesterday_review, recent_review)
+    catalyst_review = build_catalyst_review(report_date, market, lifecycle, concept_lifecycle, recent_review, stocks)
+    md = render_report(report_date, market, lifecycle, concept_lifecycle, stocks, yesterday_review, recent_review, catalyst_review)
 
     REPORT_DIR.mkdir(parents=True, exist_ok=True)
     out = REPORT_DIR / f"a_share_daily_review_{report_date}.md"
@@ -2051,6 +2056,372 @@ def _mainline_action_table(
     return header + "\n" + sep + "\n" + "\n".join(rows) + concept_rows
 
 
+def build_catalyst_review(
+    report_date: str,
+    market: dict,
+    lifecycle: dict[str, pd.DataFrame],
+    concept_lifecycle: dict[str, pd.DataFrame],
+    recent_review: pd.DataFrame,
+    stocks: dict[str, pd.DataFrame],
+) -> dict[str, pd.DataFrame | str]:
+    titles = load_catalyst_titles(report_date)
+    keywords = load_catalyst_keywords()
+    if titles.empty:
+        return {
+            "status": "missing",
+            "summary": "暂无有效文本数据，仅保留价格、宽度、生命周期和载体判断。",
+            "summary_rows": pd.DataFrame(),
+            "matches": pd.DataFrame(),
+        }
+
+    candidates = catalyst_candidate_frame(lifecycle, concept_lifecycle, recent_review)
+    matches = match_catalyst_titles(titles, keywords, candidates)
+    if matches.empty:
+        return {
+            "status": "no_match",
+            "summary": "已有催化文本输入，但与当日主线/概念未形成有效匹配。",
+            "summary_rows": pd.DataFrame(),
+            "matches": pd.DataFrame(),
+        }
+
+    summary_rows = catalyst_summary_rows(matches, candidates, market, stocks)
+    summary = catalyst_summary_sentence(summary_rows, market)
+    return {
+        "status": "ok",
+        "summary": summary,
+        "summary_rows": summary_rows,
+        "matches": matches,
+    }
+
+
+def load_catalyst_titles(report_date: str) -> pd.DataFrame:
+    if not CATALYST_TITLES_PATH.exists():
+        return pd.DataFrame()
+    try:
+        frame = pd.read_csv(CATALYST_TITLES_PATH)
+    except Exception as exc:  # noqa: BLE001
+        print(f"Failed to read catalyst titles: {exc}")
+        return pd.DataFrame()
+    required = {"date", "source_type", "source_name", "title"}
+    if frame.empty or not required.issubset(frame.columns):
+        return pd.DataFrame()
+    frame = frame.copy()
+    frame["date"] = pd.to_datetime(frame["date"], errors="coerce")
+    report_ts = pd.Timestamp(report_date)
+    start_ts = report_ts - pd.Timedelta(days=30)
+    frame = frame[(frame["date"].notna()) & (frame["date"] <= report_ts) & (frame["date"] >= start_ts)]
+    for col in ["related_industry", "related_concept"]:
+        if col not in frame.columns:
+            frame[col] = ""
+    if "summary" not in frame.columns:
+        frame["summary"] = ""
+    return frame.fillna("")
+
+
+def load_catalyst_keywords() -> pd.DataFrame:
+    if CATALYST_KEYWORDS_PATH.exists():
+        try:
+            frame = pd.read_csv(CATALYST_KEYWORDS_PATH)
+            if {"keyword", "catalyst_type", "tone"}.issubset(frame.columns):
+                return frame.fillna("")
+        except Exception as exc:  # noqa: BLE001
+            print(f"Failed to read catalyst keywords: {exc}")
+    defaults = [
+        ("新质生产力", "政策催化", "positive"),
+        ("低空经济", "政策催化", "positive"),
+        ("商业航天", "政策催化", "positive"),
+        ("数据要素", "政策催化", "positive"),
+        ("设备更新", "政策催化", "positive"),
+        ("国企改革", "政策催化", "positive"),
+        ("自主可控", "政策催化", "positive"),
+        ("国产替代", "产业催化", "positive"),
+        ("人工智能", "产业催化", "positive"),
+        ("算力", "产业催化", "positive"),
+        ("机器人", "产业催化", "positive"),
+        ("订单增长", "产业催化", "positive"),
+        ("涨价", "产业催化", "positive"),
+        ("库存去化", "产业催化", "positive"),
+        ("出海", "产业催化", "positive"),
+        ("技术突破", "产业催化", "positive"),
+        ("供需改善", "产业催化", "positive"),
+        ("药品获批", "产业催化", "positive"),
+        ("临床数据", "产业催化", "positive"),
+        ("BD出海", "产业催化", "positive"),
+        ("ETF放量", "资金催化", "positive"),
+        ("机构调研", "资金催化", "positive"),
+        ("融资余额", "资金催化", "positive"),
+        ("主力净流入", "资金催化", "positive"),
+        ("北向资金", "资金催化", "positive"),
+        ("密集推荐", "情绪拥挤", "risk"),
+        ("全面看多", "情绪拥挤", "risk"),
+        ("情绪高涨", "情绪拥挤", "risk"),
+        ("主升浪", "情绪拥挤", "risk"),
+        ("牛市主线", "情绪拥挤", "risk"),
+    ]
+    return pd.DataFrame(defaults, columns=["keyword", "catalyst_type", "tone"])
+
+
+def catalyst_candidate_frame(
+    lifecycle: dict[str, pd.DataFrame],
+    concept_lifecycle: dict[str, pd.DataFrame],
+    recent_review: pd.DataFrame,
+) -> pd.DataFrame:
+    frames = []
+    industry = lifecycle.get("mainline_overview", pd.DataFrame()).copy()
+    if not industry.empty:
+        industry["entity_type"] = "行业"
+        industry["entity"] = industry["industry"]
+        frames.append(industry)
+    concept = concept_lifecycle.get("mainline_overview", pd.DataFrame()).copy()
+    if not concept.empty:
+        concept["entity_type"] = "概念"
+        concept["entity"] = concept["industry"]
+        frames.append(concept)
+    if not frames:
+        return pd.DataFrame()
+    candidates = pd.concat(frames, ignore_index=True, sort=False)
+    priority_names = set()
+    if not recent_review.empty and "priority_label" in recent_review.columns:
+        priority_names = set(recent_review.loc[recent_review["priority_label"] == "优先复核", "industry"].astype(str))
+    candidates["is_priority"] = candidates["entity"].astype(str).isin(priority_names)
+    candidates = candidates.drop_duplicates(subset=["entity_type", "entity"])
+    return candidates
+
+
+def match_catalyst_titles(titles: pd.DataFrame, keywords: pd.DataFrame, candidates: pd.DataFrame) -> pd.DataFrame:
+    if candidates.empty or titles.empty:
+        return pd.DataFrame()
+    rows = []
+    keyword_rows = keywords.to_dict("records")
+    for _, candidate in candidates.iterrows():
+        entity = str(candidate["entity"])
+        entity_type = str(candidate["entity_type"])
+        for _, item in titles.iterrows():
+            title = str(item.get("title", ""))
+            summary = str(item.get("summary", ""))
+            searchable_text = f"{title} {summary}"
+            related_industry = str(item.get("related_industry", ""))
+            related_concept = str(item.get("related_concept", ""))
+            direct_match = (
+                entity in searchable_text
+                or entity == related_industry
+                or entity == related_concept
+                or (entity_type == "行业" and related_industry and entity in related_industry)
+                or (entity_type == "概念" and related_concept and entity in related_concept)
+            )
+            matched_keywords = []
+            matched_types = []
+            matched_tones = []
+            for kw in keyword_rows:
+                keyword = str(kw.get("keyword", "")).strip()
+                if keyword and keyword in searchable_text:
+                    matched_keywords.append(keyword)
+                    matched_types.append(str(kw.get("catalyst_type", "")))
+                    matched_tones.append(str(kw.get("tone", "")))
+            if not direct_match and not matched_keywords:
+                continue
+            rows.append(
+                {
+                    "date": item.get("date"),
+                    "source_type": item.get("source_type", ""),
+                    "source_name": item.get("source_name", ""),
+                    "title": title,
+                    "summary": summary,
+                    "entity_type": entity_type,
+                    "entity": entity,
+                    "related_industry": related_industry,
+                    "related_concept": related_concept,
+                    "matched_keywords": "、".join(dict.fromkeys(matched_keywords)),
+                    "catalyst_tags": "、".join(dict.fromkeys([t for t in matched_types if t])),
+                    "tone": "risk" if "risk" in matched_tones else "positive",
+                }
+            )
+    return pd.DataFrame(rows)
+
+
+def catalyst_summary_rows(
+    matches: pd.DataFrame,
+    candidates: pd.DataFrame,
+    market: dict,
+    stocks: dict[str, pd.DataFrame],
+) -> pd.DataFrame:
+    candidate_map = candidates.set_index("entity").to_dict("index") if not candidates.empty else {}
+    etf_entities = set()
+    etf_frame = stocks.get("etf", pd.DataFrame())
+    if not etf_frame.empty and "industry" in etf_frame.columns:
+        etf_entities = set(etf_frame["industry"].astype(str))
+    rows = []
+    for entity, group in matches.groupby("entity"):
+        candidate = candidate_map.get(entity, {})
+        price_state = catalyst_price_state(candidate)
+        strength = catalyst_strength(group)
+        relation = catalyst_price_relation(price_state, strength, group)
+        conclusion = catalyst_review_conclusion(entity, relation, candidate, group, market, entity in etf_entities)
+        catalyst_types = "、".join(
+            dict.fromkeys(
+                t
+                for tags in group["catalyst_tags"].astype(str)
+                for t in tags.split("、")
+                if t
+            )
+        ) or "标题相关"
+        rows.append(
+            {
+                "entity": entity,
+                "entity_type": candidate.get("entity_type", ""),
+                "price_state": price_state,
+                "catalyst_type": catalyst_types,
+                "catalyst_strength": strength,
+                "price_catalyst_relation": relation,
+                "review_hint": conclusion,
+                "match_count": len(group),
+                "risk_count": int((group["tone"] == "risk").sum()),
+                "is_priority": bool(candidate.get("is_priority", False)),
+                "mainline_grade": candidate.get("mainline_grade", ""),
+            }
+        )
+    if not rows:
+        return pd.DataFrame()
+    frame = pd.DataFrame(rows)
+    relation_order = {
+        "价格+催化共振": 0,
+        "文本热，价格未确认": 1,
+        "价格强，等催化验证": 2,
+        "情绪拥挤": 3,
+        "暂不放大": 4,
+    }
+    frame["relation_order"] = frame["price_catalyst_relation"].map(relation_order).fillna(9)
+    frame["priority_order"] = (~frame["is_priority"]).astype(int)
+    return frame.sort_values(["priority_order", "relation_order", "match_count"], ascending=[True, True, False]).head(5)
+
+
+def catalyst_price_state(candidate: dict) -> str:
+    grade = candidate.get("mainline_grade", "")
+    stage = candidate.get("stage", "")
+    ret20 = candidate.get("ret20", np.nan)
+    above20 = candidate.get("above20", np.nan)
+    if grade in ["A级主线", "B级主线"]:
+        return f"{compact_grade(grade)}级主线"
+    if grade in ["C级观察", "企稳重估"] or stage in ["企稳重估", "重新升温", "C级结构修复"]:
+        return "早期信号"
+    if grade in ["退潮主线", "低频监控"] or stage in ["确认后退潮", "退潮风险", "低频监控"]:
+        return "退潮/低频"
+    if pd.notna(ret20) and pd.notna(above20) and ret20 > 0 and above20 >= 0.40:
+        return "价格转强"
+    return "价格未确认"
+
+
+def catalyst_strength(group: pd.DataFrame) -> str:
+    if group.empty:
+        return "无"
+    source_count = group["source_type"].astype(str).nunique()
+    keyword_hits = group["matched_keywords"].astype(str).str.len().gt(0).sum()
+    risk_count = int((group["tone"] == "risk").sum())
+    if risk_count >= 2:
+        return "偏热"
+    if len(group) >= 4 or source_count >= 2 or keyword_hits >= 2:
+        return "增强"
+    if len(group) >= 2:
+        return "延续"
+    return "单点"
+
+
+def catalyst_price_relation(price_state: str, strength: str, group: pd.DataFrame) -> str:
+    price_strong = price_state in ["A级主线", "B级主线", "早期信号", "价格转强"]
+    catalyst_strong = strength in ["增强", "延续", "偏热"]
+    if strength == "偏热" or int((group["tone"] == "risk").sum()) >= 2:
+        return "情绪拥挤" if price_strong else "文本热，价格未确认"
+    if price_state == "退潮/低频" and catalyst_strong:
+        return "文本热，价格未确认"
+    if price_strong and catalyst_strong:
+        return "价格+催化共振"
+    if price_strong:
+        return "价格强，等催化验证"
+    if catalyst_strong:
+        return "文本热，价格未确认"
+    return "暂不放大"
+
+
+def catalyst_review_conclusion(
+    entity: str,
+    relation: str,
+    candidate: dict,
+    group: pd.DataFrame,
+    market: dict,
+    has_etf: bool,
+) -> str:
+    env_score = float(market.get("score", 0) or 0)
+    etf_note = "有ETF承接" if has_etf or "ETF" in format_etf_proxy(entity) else "先找ETF/中军承接"
+    if relation == "价格+催化共振":
+        if env_score >= 55:
+            return f"优先解读，{etf_note}，复核偏离度和回踩条件"
+        if env_score >= 45:
+            return f"优先复核，{etf_note}，环境偏观察不追高"
+        return "弱市只观察，等待环境修复"
+    if relation == "价格强，等催化验证":
+        return f"资金先行，{etf_note}，等待政策/产业逻辑补强"
+    if relation == "文本热，价格未确认":
+        return "叙事先行，价格/宽度未确认，不放大解读"
+    if relation == "情绪拥挤":
+        return "研报/情绪偏热，优先检查是否接近叙事高峰"
+    return "暂不作为重点解读方向"
+
+
+def catalyst_summary_sentence(catalyst: pd.DataFrame, market: dict) -> str:
+    if catalyst.empty:
+        return "暂无有效催化匹配，仅保留价格与宽度判断。"
+    resonant = catalyst[catalyst["price_catalyst_relation"] == "价格+催化共振"]["entity"].head(3).tolist()
+    narrative = catalyst[catalyst["price_catalyst_relation"] == "文本热，价格未确认"]["entity"].head(2).tolist()
+    crowded = catalyst[catalyst["price_catalyst_relation"] == "情绪拥挤"]["entity"].head(2).tolist()
+    parts = []
+    if resonant:
+        parts.append(f"{'、'.join(resonant)}价格与催化共振")
+    if narrative:
+        parts.append(f"{'、'.join(narrative)}文本热但价格未确认")
+    if crowded:
+        parts.append(f"{'、'.join(crowded)}有情绪拥挤迹象")
+    if not parts:
+        return "催化匹配较弱，今日仍以价格、宽度和载体复核为主。"
+    if float(market.get("score", 0) or 0) < 45:
+        parts.append("环境偏弱，催化只做观察")
+    return "；".join(parts) + "。"
+
+
+def catalyst_summary_line(catalyst_review: dict[str, pd.DataFrame | str]) -> str:
+    return str(catalyst_review.get("summary", "暂无有效文本数据，仅保留价格与宽度判断。"))
+
+
+def catalyst_review_table(frame: pd.DataFrame) -> str:
+    if frame.empty:
+        return "| 暂无 | 暂无有效催化数据 | NA | NA | NA | 暂无 |\n"
+    rows = []
+    for _, r in frame.iterrows():
+        rows.append(
+            f"| {r['entity']} | {r['price_state']} | {r['catalyst_type']} | {r['catalyst_strength']} | {r['price_catalyst_relation']} | {r['review_hint']} |"
+        )
+    return "\n".join(rows)
+
+
+def catalyst_match_detail_table(frame: pd.DataFrame) -> str:
+    if frame.empty:
+        return "| 暂无 | 暂无 | 暂无 | 暂无可用催化文本数据 | 暂无 | 暂无 | 暂无 | 暂无 | 暂无 |\n"
+    visible = frame.sort_values(["date", "entity"], ascending=[False, True]).head(50)
+    rows = []
+    for _, r in visible.iterrows():
+        date_text = pd.to_datetime(r["date"]).strftime("%Y-%m-%d") if pd.notna(r["date"]) else "NA"
+        rows.append(
+            f"| {date_text} | {r.get('source_type','')} | {r.get('source_name','')} | {str(r.get('title','')).replace('|', '/')} | {short_summary(r.get('summary', ''))} | {r.get('related_industry','')} | {r.get('related_concept','')} | {r.get('matched_keywords','')} | {r.get('catalyst_tags','')} |"
+        )
+    return "\n".join(rows)
+
+
+def short_summary(value: str, limit: int = 90) -> str:
+    text = str(value or "").replace("\n", " ").replace("|", "/").strip()
+    if not text or text.lower() == "nan":
+        return ""
+    return text if len(text) <= limit else text[:limit] + "..."
+
+
 def render_report(
     report_date: str,
     market: dict,
@@ -2059,8 +2430,9 @@ def render_report(
     stocks: dict[str, pd.DataFrame],
     yesterday_review: pd.DataFrame,
     recent_review: pd.DataFrame,
+    catalyst_review: dict[str, pd.DataFrame | str],
 ) -> str:
-    report = f"""# A 股主线研究日报 V0.3（{report_date}）
+    report = f"""# A 股主线研究日报 V0.4（{report_date}）
 
 ## 0. 今日结论卡片
 
@@ -2076,10 +2448,11 @@ def render_report(
 | 行业+概念背离 | {concept_resonance_pairs(concept_lifecycle, '❌ 背离', market['score'])} |
 | 今日重点复核行业 | {compact_priority_review_industries(recent_review)} |
 | 早期信号 | {early_signal_summary_line(recent_review, lifecycle)} |
+| 催化复核 | {catalyst_summary_line(catalyst_review)} |
 | 退潮警报 | {compact_industries(lifecycle['retreat_mainline'].head(5))} |
 | 四灯信号 | {four_lights_signal(market, recent_review, lifecycle, concept_lifecycle)} |
 
-本日报是 **主线研究日报**，不是个股推荐、短线行动提示或交易指令。优先级是：市场环境 → 主线级别 → 行业生命周期 → 主线载体。正文只放核心判断，完整评分和载体池放在附录。
+本日报是 **主线交易复核日报**。优先级是：市场环境 → 主线级别 → 行业生命周期 → ETF/中军载体 → 操作复核框架。正文只放核心判断，完整评分和载体池放在附录。
 
 ## 1. 市场环境
 
@@ -2131,7 +2504,7 @@ def render_report(
 
 概念板块用于捕捉商业航天、低空经济、AI、创新药等主题驱动行情；它和行业主线是平行维度，不互相替代。若行业与概念同时入选，可视为"行业 + 概念共振"的研究线索。
 
-共振/背离字段仅用于辅助判断主线可信度和市场共识方向，不改变主线评级，也不构成交易信号。
+共振/背离字段用于辅助判断主线可信度和市场共识方向，不改变主线评级；出现共振时提高复核优先级，出现背离时优先检查资金分歧。
 
 ## 4. 主线变化复核
 
@@ -2139,7 +2512,15 @@ def render_report(
 | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- |
 {recent_lifecycle_review_table(recent_review.head(10))}
 
-## 5. 退潮与风险
+## 5. 催化复核与交易解读提示
+
+| 方向 | 价格状态 | 催化类型 | 催化强度 | 价格-催化关系 | 解读提示 |
+| --- | --- | --- | --- | --- | --- |
+{catalyst_review_table(catalyst_review.get('summary_rows', pd.DataFrame()))}
+
+催化复核只服务于解读优先级和操作谨慎程度：文本不能单独让行业升级，退潮行业也不能因文本热度直接恢复候选。真正有效的催化必须被价格、宽度、生命周期或 ETF/中军载体共同验证。
+
+## 6. 退潮与风险
 
 | 行业 | 状态 | 驱动 | 速度 | 阶段 | 5日 | 60峰值回撤 | 宽度 | 风险备注 |
 | --- | --- | --- | --- | --- | ---: | ---: | ---: | --- |
@@ -2151,15 +2532,15 @@ def render_report(
 | --- | --- | --- | ---: | ---: | --- | --- | --- |
 {compact_yesterday_review_table(yesterday_review.head(8))}
 
-## 6. 主线载体摘要
+## 7. 主线载体摘要
 
 {carrier_summary_table(stocks, market['score'])}
 
-## 7. 明日复核清单
+## 8. 明日复核清单
 
 {next_day_checklist(recent_review, lifecycle)}
 
-## 8. 疑似漏报复核摘要
+## 9. 疑似漏报复核摘要
 
 {suspect_miss_summary_table(lifecycle['suspect_miss'])}
 
@@ -2292,7 +2673,7 @@ def render_report(
 
 ## 附录 D：疑似漏报复核明细
 
-> 疑似漏报不等于机会提示。部分行业可能已处于退潮初期、宽度不足，或仅为少数个股/细分方向拉动。本模块仅用于框架审计和后续迭代，不构成交易建议。
+> 疑似漏报不等于可操作方向。部分行业可能已处于退潮初期、宽度不足，或仅为少数个股/细分方向拉动。本模块用于框架审计和后续迭代。
 
 | 行业 | 60日收益 | 20日收益 | 5日收益 | 站上MA20比例 | 站上MA60比例 | 60日峰值回撤 | 未入选原因 | 复核结论 |
 | --- | ---: | ---: | ---: | ---: | ---: | ---: | --- | --- |
@@ -2300,19 +2681,20 @@ def render_report(
 
 ## 附录 E：数据口径、局限与 TODO
 
-- 本框架不负责猜底；它只负责识别升温、确认主线、跟踪延续、发现退潮、判断是否企稳重估，不负责预测底部、捕捉最低点、给出交易执行点、执行管理或精细个股排序。
+- 本框架不负责猜底；它负责识别升温、确认主线、跟踪延续、发现退潮、判断是否企稳重估，并围绕 ETF / 中军载体给出交易复核框架。
 - 今日数据来自 Tushare 日线快照，不含真实9:26集合竞价和分钟级成交。
 - 行业分类使用本地 stock_basic 行业字段，后续应升级为申万/中信行业 + 概念主题双维度。
 - 概念主题接入东方财富概念板块，和行业主线平行展示；概念板块宽度使用涨跌家数比例 `up_num/(up_num+down_num)` 近似，非真实个股 MA 穿透计算。
 - 概念板块价格用每日涨跌幅反推等权价格指数，和市值加权指数、实际 ETF 净值存在偏差。
 - 概念成分股可能和行业分类重叠，两者不是互斥关系；东方财富概念板块每日更新，可能存在 1-2 日数据延迟。
 - 当前已增加风格/主题标签，后续应建立行业-主题-风格三层映射。
+- 催化复核当前只支持本地标题级文本输入：`data/catalysts/catalyst_titles.csv`；关键词配置来自 `config/catalyst_keywords.csv`，没有文件时使用内置轻量关键词。
 - 基本面字段后续只用于主线解释、载体分层、风险标签和排雷，不进入主线综合分，也不作为固定个股分权重。预留字段：ROE, EPS, 营收同比增速, 归母净利润同比增速, 扣非净利润同比增速, 毛利率, 净利率, 经营现金流/净利润, 资产负债率, PE历史分位, PB历史分位, 行业估值分位。
 - 当前内部个股分只用于筛选载体，不作为外部推荐排序；基本面不做正向加权，只通过估值温度、基本面标签和硬性风险惩罚影响展示。
 - 目前基本面只做 PE/PB 与标签级判断：质量较稳、盈利改善、盈利承压、亏损/不可比、现金流待核验、估值正常、估值偏高、估值极高、周期高位风险、财务数据待补。
-- 风险惩罚是硬扣分，不应被强度分完全抵消；用户不应理解为"个股分越高 = 越值得行动"。
+- 风险惩罚是硬扣分，不应被强度分完全抵消；个股分只作为载体筛选辅助，最终以行业生命周期、ETF/中军匹配度、环境分和操作条件为准。
 - 后续补充退潮持续天数：用于区分初始退潮、退潮确认、退潮延续和低频监控。
-- 本日报不构成投资建议。
+- 日报结论以本地缓存和当日增量数据为准；数据异常时必须停止输出并复核数据源。
 
 ### 宽度分级参考
 
@@ -2323,6 +2705,14 @@ def render_report(
 | 40%-60% | 分化明显 |
 | 20%-40% | 宽度不足 |
 | <20% | 高风险 / 弱扩散 |
+
+## 附录 F：催化关键词命中明细
+
+催化文本只用于解释主线、提高复核优先级和识别叙事滞后，不进入 A/B/C/退潮评级，也不能单独触发建仓或加仓。
+
+| 日期 | 来源类型 | 来源 | 标题 | 摘要 | 关联行业 | 关联概念 | 命中关键词 | 催化标签 |
+| --- | --- | --- | --- | --- | --- | --- | --- | --- |
+{catalyst_match_detail_table(catalyst_review.get('matches', pd.DataFrame()))}
 """
     return _apply_stage_labels(report)
 

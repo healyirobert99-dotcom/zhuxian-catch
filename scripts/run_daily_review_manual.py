@@ -15,6 +15,7 @@ sys.path.insert(0, str(BASE / "scripts"))
 
 import generate_daily_review as daily_review  # noqa: E402
 import render_daily_review_html as html_review  # noqa: E402
+import sync_catalysts  # noqa: E402
 
 
 DB_PATH = BASE / "data" / "a_stock_selector.sqlite3"
@@ -35,13 +36,14 @@ def main() -> None:
     load_dotenv(BASE / ".env")
     token = os.environ.get("TUSHARE_TOKEN")
     if not token:
-        raise SystemExit("TUSHARE_TOKEN is required for automated daily review. Refusing to use stale local cache.")
+        raise SystemExit("TUSHARE_TOKEN is required for strict manual daily review. Refusing to use stale local cache.")
 
     pro = daily_review.build_tushare_client(token)
     trade_date = normalize_trade_date(args.trade_date) if args.trade_date else latest_review_trade_date(pro)
     sync_stats = daily_review.ensure_daily_cache(trade_date, token, pro)
     concept_stats = daily_review.ensure_concept_cache(trade_date, token, pro)
     concept_member_stats = daily_review.ensure_concept_member_cache(trade_date, token)
+    catalyst_stats = sync_catalyst_titles(trade_date)
     validate_complete_daily_cache(trade_date)
     validate_complete_concept_cache(trade_date)
     validate_complete_concept_member_cache(trade_date)
@@ -62,6 +64,26 @@ def main() -> None:
     print(index_path)
     print(f"Concept cache rows: {concept_stats.get('concept_daily_rows', 'NA')}")
     print(f"Concept member rows: {concept_member_stats.get('concept_member_rows', 'NA')}")
+    print(
+        "Catalyst titles: "
+        f"fetched={catalyst_stats.fetched_rows}, appended={catalyst_stats.appended_rows}"
+    )
+
+
+def sync_catalyst_titles(trade_date: str) -> sync_catalysts.SyncResult:
+    try:
+        result = sync_catalysts.sync_catalysts(days=5, end_date=trade_date, source_timeout=8)
+    except Exception as exc:  # noqa: BLE001
+        print(f"Catalyst title sync failed; continuing with existing local catalyst cache: {exc}")
+        return sync_catalysts.SyncResult(
+            fetched_rows=0,
+            appended_rows=0,
+            output_path=sync_catalysts.CATALYST_TITLES_PATH,
+            source_notes=[f"failed: {exc}"],
+        )
+    for note in result.source_notes:
+        print(f"Catalyst source: {note}")
+    return result
 
 
 def load_dotenv(path: Path) -> None:
@@ -79,7 +101,7 @@ def load_dotenv(path: Path) -> None:
 
 
 def parse_args() -> argparse.Namespace:
-    parser = argparse.ArgumentParser(description="Generate the daily mainline research report and matching HTML page.")
+    parser = argparse.ArgumentParser(description="Manually generate the daily mainline research report and matching HTML page.")
     parser.add_argument("--trade-date", help="Optional trade date such as 20260601 or 2026-06-01.")
     parser.add_argument("--no-lifecycle-cache", action="store_true", help="Recompute lifecycle metrics instead of using cache.")
     return parser.parse_args()
@@ -97,7 +119,7 @@ def latest_review_trade_date(pro) -> str:
     tushare_date = latest_open_trade_date_from_tushare(pro, today)
     if tushare_date:
         return tushare_date
-    raise SystemExit("Tushare trade calendar unavailable. Refusing to fall back to local cache for automation.")
+    raise SystemExit("Tushare trade calendar unavailable. Refusing to fall back to local cache for strict manual review.")
 
 
 def latest_open_trade_date_from_tushare(pro, today: date) -> str | None:
