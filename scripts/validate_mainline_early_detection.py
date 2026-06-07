@@ -278,8 +278,10 @@ def early_signal_type(row: pd.Series) -> str:
 
 
 def dedupe_events(events: pd.DataFrame, group: str, cooldown_days: int) -> pd.DataFrame:
-    if events.empty:
-        return events.assign(group=group)
+    if events.empty or "date" not in events.columns or "industry" not in events.columns:
+        out = events.copy() if not events.empty else events
+        out["group"] = group
+        return out
     rows = []
     last_seen: dict[str, pd.Timestamp] = {}
     for _, row in events.sort_values(["date", "industry"]).iterrows():

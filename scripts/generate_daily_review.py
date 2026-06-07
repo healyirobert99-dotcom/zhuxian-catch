@@ -15,6 +15,7 @@ import pandas as pd
 BASE = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(BASE / "src"))
 
+from ashare_a_plus.etf_map import format_etf_proxy, lookup_etf_code  # noqa: E402
 from ashare_a_plus.sqlite_store import SQLiteStore  # noqa: E402
 
 DB_PATH = BASE / "data" / "a_stock_selector.sqlite3"
@@ -86,28 +87,6 @@ EXCLUDED_DYNAMIC_CONCEPT_KEYWORDS = (
     "首板",
     "打板",
 )
-
-
-ETF_PROXY = {
-    "银行": "银行ETF/银行指数",
-    "证券": "证券ETF/证券指数",
-    "保险": "保险主题指数",
-    "半导体": "半导体ETF/芯片ETF",
-    "元器件": "电子ETF/元器件行业指数",
-    "软件服务": "软件ETF/计算机指数",
-    "通信设备": "通信ETF/通信设备指数",
-    "电气设备": "新能源ETF/电力设备指数",
-    "火力发电": "电力ETF/火电行业指数",
-    "水力发电": "电力ETF/水电行业指数",
-    "新型电力": "绿色电力ETF/新型电力指数",
-    "煤炭开采": "煤炭ETF/煤炭指数",
-    "白酒": "酒ETF/白酒指数",
-    "啤酒": "消费ETF/啤酒行业指数",
-    "航空": "航空ETF/航空运输指数",
-    "机场": "交通运输ETF/机场指数",
-    "港口": "交通运输ETF/港口指数",
-    "路桥": "暂无合适ETF，使用行业指数观察",
-}
 
 
 def main() -> None:
@@ -1865,7 +1844,10 @@ def etf_proxy_table(lifecycle: dict[str, pd.DataFrame]) -> pd.DataFrame:
         frame = frame[frame["industry"].isin(allowed)].head(16)
     for _, row in frame.iterrows():
         industry = row["industry"]
-        proxy = ETF_PROXY.get(industry, "暂无合适ETF，使用行业指数观察")
+        etf_code = lookup_etf_code(industry) or ""
+        proxy = format_etf_proxy(industry)
+        # format_etf_proxy 已包含代码和名称，无需再拼接
+        proxy_display = proxy if etf_code else proxy
         if row["mainline_grade"] == "A级主线":
             scene = "主线跟踪/优先研究行业载体"
         elif row["mainline_grade"] == "B级主线":
@@ -1878,7 +1860,8 @@ def etf_proxy_table(lifecycle: dict[str, pd.DataFrame]) -> pd.DataFrame:
             {
                 "mainline_grade": row["mainline_grade"],
                 "industry": industry,
-                "proxy": proxy,
+                "etf_code": etf_code,
+                "proxy": proxy_display,
                 "scene": scene,
                 "trend_state": row["trend_state"],
                 "risk_note": row["risk_note"],
@@ -1931,6 +1914,143 @@ def stock_pool(row: pd.Series) -> str:
     return "低位修复/弱势反弹观察池"
 
 
+def _yesterday_score_text(market: dict) -> str:
+    yday = market.get("yesterday_score")
+    if yday is None:
+        return "无昨日数据"
+    diff = market["score"] - yday
+    arrow = "↑" if diff > 0 else "↓" if diff < 0 else "→"
+    return f"昨日 {yday} → 今日 {market['score']} ({arrow}{abs(diff)})"
+
+
+def _env_condition_note(market: dict) -> str:
+    if market["score"] >= 55:
+        return "**环境已转强**（≥55），可关注主线行业 ETF 和中军载体"
+    return "**环境偏弱**（<55），优先观察早期信号，不追高"
+
+
+def _concept_divergence_tag(lifecycle: dict[str, pd.DataFrame]) -> str:
+    """Return a tag if concept themes show notable divergences, else empty."""
+    frame = lifecycle.get("mainline_overview", pd.DataFrame())
+    if frame.empty or "resonance_status" not in frame.columns:
+        return ""
+    diverged = frame[frame["resonance_status"] == "❌ 背离"].head(3)
+    if diverged.empty:
+        return ""
+    names = "、".join(diverged["industry"].astype(str).tolist())
+    return f" ⚠️{names}与行业背离"
+
+
+def _concept_divergence_note(lifecycle: dict[str, pd.DataFrame]) -> str:
+    frame = lifecycle.get("mainline_overview", pd.DataFrame())
+    if frame.empty or "resonance_status" not in frame.columns:
+        return ""
+    diverged = frame[frame["resonance_status"] == "❌ 背离"].head(3)
+    if diverged.empty:
+        return ""
+    names = "、".join(diverged["industry"].astype(str).tolist())
+    return f"（{names}与对应行业背离，注意分歧）"
+
+
+def _compact_change_table(frame: pd.DataFrame) -> str:
+    if frame.empty:
+        return "| 暂无 | 暂无 | 暂无 | 暂无 | 暂无 | 暂无 | 暂无 | 暂无 | 暂无 |"
+    rows = []
+    for _, r in frame.head(10).iterrows():
+        rows.append(
+            f"| {r.get('industry','')} | {r.get('today_level','')} | {r.get('t1_level','')} "
+            f"| {r.get('t3_level','')} | {r.get('t5_level','')} | {r.get('today_stage','')} "
+            f"| {r.get('early_signal_type','')} | {r.get('change_desc','')} | {r.get('judgment','')} |"
+        )
+    return "\n".join(rows)
+
+
+def _compact_carrier_table(frame: pd.DataFrame) -> str:
+    if frame.empty:
+        return "| 暂无 | 暂无 | 暂无 | 暂无 |"
+    rows = []
+    for _, r in frame.head(5).iterrows():
+        rows.append(
+            f"| {r.get('industry','')} | {r.get('symbol','')} {r.get('name','')} "
+            f"| {r.get('trend_state','')} | {r.get('action','')} |"
+        )
+    return "\n".join(rows)
+
+
+def _full_score_table(frame: pd.DataFrame) -> str:
+    if frame.empty:
+        return "| 暂无 | 暂无 | 暂无 | 暂无 | 暂无 | 暂无 | 暂无 | 暂无 | 暂无 | 暂无 | 暂无 | 暂无 | 暂无 | 暂无 |"
+    rows = []
+    for _, r in frame.iterrows():
+        rows.append(
+            f"| {r['mainline_grade']} | {r['industry']} | {r['stage']} | {r.get('driver_type','')} "
+            f"| {r.get('speed_type','')} | {r.get('catalyst_rhythm','')} | {r.get('stage','')} "
+            f"| {r.get('confirmed_score',0):.0f} | {pct(r.get('ret5'))} | {pct(r.get('ret20'))} "
+            f"| {pct(r.get('ret60'))} | {pct(r.get('drawdown20'))} | {pct(r.get('drawdown60'))} "
+            f"| {pct(r.get('above20'))} | {r.get('risk_note','')} |"
+        )
+    return "\n".join(rows)
+
+
+def _mainline_action_table(
+    lifecycle: dict[str, pd.DataFrame],
+    stocks: dict[str, pd.DataFrame],
+    concept_lifecycle: dict[str, pd.DataFrame],
+) -> str:
+    """Combine industry overview with ETF and action hints in one scannable table."""
+    frame = lifecycle.get("mainline_overview", pd.DataFrame()).head(10)
+    if frame.empty:
+        return "| 暂无 | 暂无 | 暂无 | 暂无 |"
+
+    # Build ETF lookup
+    etf_map = {}
+    etf_df = stocks.get("etf", pd.DataFrame())
+    if not etf_df.empty and "industry" in etf_df.columns:
+        for _, r in etf_df.iterrows():
+            code = str(r.get("proxy", ""))
+            if "暂无" not in code:
+                etf_map[str(r["industry"])] = code
+
+    rows = []
+    for _, r in frame.iterrows():
+        ind = str(r["industry"])
+        grade = str(r.get("mainline_grade", ""))
+        ret20_str = pct(r.get("ret20"))
+        above20_str = pct(r.get("above20"))
+        conclusion = str(r.get("risk_note", "") or r.get("status_explanation", ""))[:40]
+
+        # Action hint
+        action = ""
+        if grade == "A级主线":
+            action = "✅ 可跟"
+        elif grade == "B级主线":
+            action = "⏳ 观察"
+        elif grade == "C级观察":
+            action = "👀 等信号"
+        elif "退潮" in grade:
+            action = "❌ 躲开"
+        else:
+            action = "—"
+
+        # ETF hint
+        etf = etf_map.get(ind, "")
+
+        rows.append(
+            f"| {grade.replace('级主线','')} | {ind} | {ret20_str} | {above20_str} "
+            f"| {action} | {etf} | {conclusion} |"
+        )
+
+    # Concept divergence note
+    concept_note = _concept_divergence_note(concept_lifecycle)
+    concept_rows = ""
+    if concept_note:
+        concept_rows = f"\n\n⚠️ 概念与行业背离：{concept_note}"
+
+    header = "| 级别 | 行业 | 20日收益 | 宽度(MA20) | 操作 | 可交易ETF | 备注 |"
+    sep = "| --- | --- | ---: | ---: | --- | --- | --- |"
+    return header + "\n" + sep + "\n" + "\n".join(rows) + concept_rows
+
+
 def render_report(
     report_date: str,
     market: dict,
@@ -1940,7 +2060,7 @@ def render_report(
     yesterday_review: pd.DataFrame,
     recent_review: pd.DataFrame,
 ) -> str:
-    return f"""# A 股主线研究日报 V0.3（{report_date}）
+    report = f"""# A 股主线研究日报 V0.3（{report_date}）
 
 ## 0. 今日结论卡片
 
@@ -1955,6 +2075,7 @@ def render_report(
 | 行业+概念共振 | {concept_resonance_pairs(concept_lifecycle, '✅ 共振', market['score'])} |
 | 行业+概念背离 | {concept_resonance_pairs(concept_lifecycle, '❌ 背离', market['score'])} |
 | 今日重点复核行业 | {compact_priority_review_industries(recent_review)} |
+| 早期信号 | {early_signal_summary_line(recent_review, lifecycle)} |
 | 退潮警报 | {compact_industries(lifecycle['retreat_mainline'].head(5))} |
 | 四灯信号 | {four_lights_signal(market, recent_review, lifecycle, concept_lifecycle)} |
 
@@ -2004,11 +2125,11 @@ def render_report(
 
 ## 3. 概念主题主线
 
-| 级别 | 概念 | 状态 | 驱动 | 对应行业 | 共振判断 | 20日 | 60日 | 60峰值回撤 | 宽度 | 结论 |
-| --- | --- | --- | --- | --- | --- | ---: | ---: | ---: | ---: | --- |
+| 级别 | 概念 | 状态 | 驱动 | 对应行业 | 共振判断 | 20日 | 60日 | 60峰值回撤 | 宽度 | 可交易ETF | 结论 |
+| --- | --- | --- | --- | --- | --- | ---: | ---: | ---: | ---: | --- | --- |
 {concept_theme_table(concept_lifecycle)}
 
-概念板块用于捕捉商业航天、低空经济、AI、创新药等主题驱动行情；它和行业主线是平行维度，不互相替代。若行业与概念同时入选，可视为“行业 + 概念共振”的研究线索。
+概念板块用于捕捉商业航天、低空经济、AI、创新药等主题驱动行情；它和行业主线是平行维度，不互相替代。若行业与概念同时入选，可视为"行业 + 概念共振"的研究线索。
 
 共振/背离字段仅用于辅助判断主线可信度和市场共识方向，不改变主线评级，也不构成交易信号。
 
@@ -2092,9 +2213,9 @@ def render_report(
 
 ### B1 ETF / 行业指数
 
-| 主线级别 | 主线 | ETF/指数 | 适合场景 | 当前状态 | 风险提示 |
+| 主线级别 | 主线 | 可交易ETF | 适合场景 | 当前状态 | 风险提示 |
 | --- | --- | --- | --- | --- | --- |
-{etf_table(stocks['etf'])}
+{etf_table(etf_proxy_table(lifecycle))}
 
 ### B2 中军龙头
 
@@ -2128,16 +2249,46 @@ def render_report(
 | 弱势反弹 → 候选 | 中期趋势修复、宽度提升、回撤收窄 | 不能因5日反弹直接升级 |
 | 确认后退潮 | 中期曾强，但短期急跌、回撤大或宽度塌缩 | 只做风险监控和等待修复 |
 
-### C1 早期主线优先复核依据
+### C1 早期主线信号说明
 
-五年历史验证显示，`企稳重估`、`重新升温`、`C级结构修复` 在市场环境分 ≥45 时，未来 20/40/60 日相对全市场行业中位数有更稳定的正反馈。因此日报只提高这些方向的复核优先级，不改变 A/B/C/退潮评级，也不输出交易指令。
+| 信号 | 标签 | 含义 | 识别条件 |
+| --- | --- | --- | --- |
+| 企稳重估 | 🛡 不跌了 | 之前跌透了，现在止跌反弹，宽度恢复，量能企稳 | 退潮评分≥55 但短线转正，宽度≥35%，回撤收窄 |
+| 重新升温 | 🔥 冷变热 | 之前无人关注的行业，突然开始涨，从冷板凳升级到 C 级 | 前 5 天还在退潮/低频，现在升为 C 级且 5 日收益>0 |
+| C级结构修复 | 🔧 在修复 | C 级行业，跌得不深、没崩，正在修复技术结构 | C 级但非弱势反弹，20 日收益>-3%，60 日回撤>-15% |
 
-| 规则组 | 样本数 | 20日跑赢胜率 | 20日平均超额 | 40日跑赢胜率 | 40日平均超额 | 60日跑赢胜率 | 60日平均超额 |
-| --- | ---: | ---: | ---: | ---: | ---: | ---: | ---: |
-| 早期核心 + 环境分≥45 | 2318 | 62.06% | 1.52% | 67.59% | 2.77% | 71.38% | 3.68% |
-| 企稳重估 | 1370 | 67.18% | 1.81% | 72.19% | 3.14% | NA | NA |
-| 重新升温 | 1598 | 54.34% | 0.86% | 60.74% | 2.08% | NA | NA |
-| C级结构修复 | 1071 | 52.14% | 0.75% | 61.26% | 1.98% | NA | NA |
+### C2 早期主线回测数据
+
+基于 2021~2026 年 5 年回测，早期核心信号 + 环境分 ≥45 的组合（2653 条样本）。
+
+| 信号类型 | 样本 | 20日胜率 | 40日胜率 | 40日超额 | 40日峰值 | 见顶天数 | 最佳环境 |
+| --- | ---: | ---: | ---: | ---: | ---: | ---: | --- |
+| 🛡 企稳修复 | 1300 | 66.0% | **69.5%** | +3.08% | +3.40% | 13 天 | 偏观察(45-54) 胜率 77.1% |
+| 🔥 冷变热 | 745 | 58.0% | **58.9%** | +2.61% | **+4.37%** | 13 天 | 偏观察(45-54) 胜率 63.6% |
+| 🔧 修复 | 608 | 57.6% | **62.0%** | +2.05% | +3.68% | 12 天 | 中性偏强(55-69) 胜率 65.1% |
+
+**三条操作铁律：**
+
+1. **企稳修复优先**。40 日胜率 69.5%、回撤最小（-9.1%），是赔率最高的信号类型。
+2. **冷变热在进攻环境反而要警惕**。当环境分 ≥70 时胜率仅 55.3%，热门市场里的回暖常是假性升温。
+3. **最佳持有窗口是 40 天**。三个信号从 20 天→40 天胜率都有 +3%~+5% 的跳升，40→60 天边际提升有限。
+
+### C3 交易策略范式（回测验证版）
+
+基于 2021-2026 年 2653 条早期信号逐条验证。β 策略适用。
+
+| 阶段 | 时机 | 企稳 🛡 | 回暖 🔥 | 修复 🔧 | 关键规则 |
+| --- | --- | --- | --- | --- | --- |
+| ① 建仓 | 信号后 1~3 天 | 8~10% | 5~8%（≥70 减半） | 5% | 有 ETF/中军才建；等回踩 |
+| ② 加仓 | 第 5~10 天 | +5% | +5%（≥70 不加） | +5% | 级别升级或站上 MA20；**不**绑宽度 |
+| ③ 减仓 | 达峰或触发 | 达 +3.4% 减 1/3 | 达 +4.4% 减 1/3 | 达 +3.7% 减 1/3 | 中位峰值在 8~9 天 |
+| ④ 清仓 | 40 天或触发 | 全部 | 全部 | 全部 | 到期/退潮/回撤达 -7% |
+
+**统一止损：持仓回撤达 -7%。** 「日低 -3%」无效（82% 触发）。回撤 <5% 时胜率 88-93%，>7% 时仅 50-59%。
+
+**环境规则：** ≤29 不建仓（已有仓位不因环境清仓）；45-54 企稳最优（77.1% 胜率）；≥70 回暖减半（胜率仅 55.3%）。
+
+> 详细范式及验证数据：见 `dp-xiangmu.md` 第 10-11 节。
 
 ## 附录 D：疑似漏报复核明细
 
@@ -2156,10 +2307,10 @@ def render_report(
 - 概念板块价格用每日涨跌幅反推等权价格指数，和市值加权指数、实际 ETF 净值存在偏差。
 - 概念成分股可能和行业分类重叠，两者不是互斥关系；东方财富概念板块每日更新，可能存在 1-2 日数据延迟。
 - 当前已增加风格/主题标签，后续应建立行业-主题-风格三层映射。
-- 基本面字段后续只用于主线解释、载体分层、风险标签和排雷，不进入主线综合分，也不作为固定个股分权重。预留字段：{", ".join(FUNDAMENTAL_TAG_TODO)}。
+- 基本面字段后续只用于主线解释、载体分层、风险标签和排雷，不进入主线综合分，也不作为固定个股分权重。预留字段：ROE, EPS, 营收同比增速, 归母净利润同比增速, 扣非净利润同比增速, 毛利率, 净利率, 经营现金流/净利润, 资产负债率, PE历史分位, PB历史分位, 行业估值分位。
 - 当前内部个股分只用于筛选载体，不作为外部推荐排序；基本面不做正向加权，只通过估值温度、基本面标签和硬性风险惩罚影响展示。
 - 目前基本面只做 PE/PB 与标签级判断：质量较稳、盈利改善、盈利承压、亏损/不可比、现金流待核验、估值正常、估值偏高、估值极高、周期高位风险、财务数据待补。
-- 风险惩罚是硬扣分，不应被强度分完全抵消；用户不应理解为“个股分越高 = 越值得行动”。
+- 风险惩罚是硬扣分，不应被强度分完全抵消；用户不应理解为"个股分越高 = 越值得行动"。
 - 后续补充退潮持续天数：用于区分初始退潮、退潮确认、退潮延续和低频监控。
 - 本日报不构成投资建议。
 
@@ -2173,10 +2324,45 @@ def render_report(
 | 20%-40% | 宽度不足 |
 | <20% | 高风险 / 弱扩散 |
 """
+    return _apply_stage_labels(report)
+
+
+def _apply_stage_labels(text: str) -> str:
+    """Replace internal stage/grade names with display labels in the final report."""
+    for internal, display in _STAGE_LABEL.items():
+        text = text.replace(internal, display)
+    for internal, display in _GRADE_LABEL.items():
+        text = text.replace(internal, display)
+    for internal, display in _SIGNAL_LABEL.items():
+        text = text.replace(internal, display)
+    return text
 
 
 def pct(value: float) -> str:
     return "NA" if pd.isna(value) else f"{value:.2%}"
+
+
+# ---- 阶段/级别显示映射（内部逻辑不变，仅影响日报展示用词） ----
+_STAGE_LABEL = {
+    "强确认延续": "强势确认", "弱确认延续": "偏弱确认", "防御修复延续": "防御修复",
+    "确认边缘": "待确认", "确认后退潮": "逐步退潮",
+    "企稳重估": "企稳修复", "候选主线": "待观察", "升温观察": "预热中",
+    "接力催化初现": "接力初现", "弱势反弹": "弱反弹", "低频监控": "低关注",
+    "暂不观察": "无信号", "高位震荡": "高震", "峰值回撤后修复": "回撤修复",
+    "早期升温": "初升温", "真延续": "趋势延续",
+    "C级加速升温": "加速升温", "C级结构修复": "C修复",
+}
+_GRADE_LABEL = {
+    "退潮主线": "退潮",
+}
+_SIGNAL_LABEL = {
+    "企稳重估": "🛡 企稳", "重新升温": "🔥 回暖", "C级结构修复": "🔧 修复",
+}
+
+
+def _label(text: str) -> str:
+    """Translate internal stage/grade to display label."""
+    return _STAGE_LABEL.get(text, _GRADE_LABEL.get(text, _SIGNAL_LABEL.get(text, text)))
 
 
 def num(value: float, digits: int = 1) -> str:
@@ -2249,10 +2435,12 @@ def concept_theme_table(lifecycle: dict[str, pd.DataFrame]) -> str:
     visible = frame[frame["mainline_grade"].isin(["A级主线", "B级主线", "C级观察", "企稳重估"])].head(12)
     rows = []
     for _, r in visible.iterrows():
+        concept_name = r["industry"]
+        etf_info = format_etf_proxy(concept_name)
         rows.append(
-            f"| {compact_grade(r['mainline_grade'])} | {r['industry']} | {r['status_explanation']} | {r['driver_type']} | {r.get('matched_industry_display', '—')} | {r.get('resonance_status', '— 无对应')} | {pct(r['ret20'])} | {pct(r['ret60'])} | {pct(r['drawdown60'])} | {pct(r['above20'])} | {concept_conclusion(r)} |"
+            f"| {compact_grade(r['mainline_grade'])} | {concept_name} | {r['status_explanation']} | {r['driver_type']} | {r.get('matched_industry_display', '—')} | {r.get('resonance_status', '— 无对应')} | {pct(r['ret20'])} | {pct(r['ret60'])} | {pct(r['drawdown60'])} | {pct(r['above20'])} | {etf_info} | {concept_conclusion(r)} |"
         )
-    return "\n".join(rows) if rows else "| 暂无 | 无入选概念 | NA | NA | — | — 无对应 | NA | NA | NA | NA | 当日暂无 A/B/C/企稳级别概念主题 |"
+    return "\n".join(rows) if rows else "| 暂无 | 无入选概念 | NA | NA | — | — 无对应 | NA | NA | NA | NA | 暂无合适ETF | 当日暂无 A/B/C/企稳级别概念主题 |"
 
 
 def concept_conclusion(row: pd.Series) -> str:
@@ -2379,6 +2567,87 @@ def compact_priority_review_industries(recent_review: pd.DataFrame) -> str:
         return "无"
     names = "、".join(frame["industry"].head(5).astype(str).tolist())
     return f"{names}（企稳重估/重新升温/C级结构修复 + 环境分≥45）"
+
+
+def early_signal_summary_line(
+    recent_review: pd.DataFrame,
+    lifecycle: dict[str, pd.DataFrame],
+) -> str:
+    """Extract and display early signal industries with backtest stats for trial positioning."""
+    early_from_review = pd.DataFrame()
+    if not recent_review.empty and "early_signal_type" in recent_review.columns:
+        early_from_review = recent_review[recent_review["early_signal_type"].isin(["企稳重估", "重新升温", "C级结构修复"])].copy()
+
+    stable = lifecycle.get("stable_revaluation", pd.DataFrame())
+
+    seen = set()
+
+    # ---- Collect all three types ----
+    # 企稳重估: from stable_revaluation + early_from_review with matching type
+    stable_list = []
+    if not stable.empty and "industry" in stable.columns:
+        for _, r in stable.iterrows():
+            name = str(r["industry"])
+            if name not in seen:
+                seen.add(name)
+                stable_list.append(name)
+    if not early_from_review.empty:
+        for _, r in early_from_review.iterrows():
+            name = str(r["industry"])
+            if name not in seen and r.get("early_signal_type") == "企稳重估":
+                seen.add(name)
+                stable_list.append(name)
+
+    # 重新升温
+    rewarm_list = []
+    if not early_from_review.empty:
+        rewarm = early_from_review[early_from_review["early_signal_type"] == "重新升温"]
+        for _, r in rewarm.iterrows():
+            name = str(r["industry"])
+            if name not in seen:
+                seen.add(name)
+                rewarm_list.append(name)
+
+    # C级结构修复
+    repair_list = []
+    if not early_from_review.empty:
+        repair = early_from_review[early_from_review["early_signal_type"] == "C级结构修复"]
+        for _, r in repair.iterrows():
+            name = str(r["industry"])
+            if name not in seen:
+                seen.add(name)
+                repair_list.append(name)
+
+    # ---- Format output ----
+    LABELS = {
+        "企稳重估": "🛡 不跌了（企稳）",
+        "重新升温": "🔥 冷变热（升温）",
+        "C级结构修复": "🔧 在修复（修结构）",
+    }
+    STATS_MAP = {
+        "企稳重估": "胜率69.5% 超额+3.1% 峰值+3.4% 约13天见顶",
+        "重新升温": "胜率58.9% 超额+2.6% 峰值+4.4% 约13天见顶(进攻>70时慎用)",
+        "C级结构修复": "胜率62.0% 超额+2.1% 峰值+3.7% 约12天见顶",
+    }
+
+    def format_group(signal_type, industry_list):
+        label = LABELS.get(signal_type, signal_type)
+        names = "、".join(industry_list)
+        stat = STATS_MAP.get(signal_type, "")
+        return f"{label} → {names}（{stat}）"
+
+    parts = []
+    if stable_list:
+        parts.append(format_group("企稳重估", stable_list[:4]))
+    if rewarm_list:
+        parts.append(format_group("重新升温", rewarm_list[:4]))
+    if repair_list:
+        parts.append(format_group("C级结构修复", repair_list[:4]))
+
+    if not parts:
+        return "无"
+
+    return " ".join(parts)
 
 
 def concept_resonance_pairs(lifecycle: dict[str, pd.DataFrame], status: str, market_score: float) -> str:
@@ -3075,11 +3344,15 @@ def stock_table(frame: pd.DataFrame, market_score: float) -> str:
 
 def etf_table(frame: pd.DataFrame) -> str:
     if frame.empty:
-        return "| 暂无 | 暂无 | 暂无 | 暂无 | 暂无 | 暂无 |"
+        return "| 暂无 | 暂无 | 暂无 | 暂无 | 暂无 | 暂无 | 暂无 |"
     rows = []
     for _, r in frame.iterrows():
+        etf_code = r.get("etf_code", "")
+        proxy_text = r["proxy"]
+        if etf_code:
+            proxy_text = r["proxy"]
         rows.append(
-            f"| {r['mainline_grade']} | {r['industry']} | {r['proxy']} | {r['scene']} | {r['trend_state']} | {r['risk_note']} |"
+            f"| {r['mainline_grade']} | {r['industry']} | {proxy_text} | {r['scene']} | {r['trend_state']} | {r['risk_note']} |"
         )
     return "\n".join(rows)
 
