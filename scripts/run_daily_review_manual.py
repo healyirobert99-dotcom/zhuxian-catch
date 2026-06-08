@@ -15,6 +15,7 @@ sys.path.insert(0, str(BASE / "scripts"))
 
 import generate_daily_review as daily_review  # noqa: E402
 import render_daily_review_html as html_review  # noqa: E402
+import snapshot_concept_members  # noqa: E402
 import sync_catalysts  # noqa: E402
 
 
@@ -44,6 +45,7 @@ def main() -> None:
     concept_stats = daily_review.ensure_concept_cache(trade_date, token, pro)
     concept_member_stats = daily_review.ensure_concept_member_cache(trade_date, token)
     catalyst_stats = sync_catalyst_titles(trade_date)
+    snapshot_concept_members_if_needed(trade_date, token)
     validate_complete_daily_cache(trade_date)
     validate_complete_concept_cache(trade_date)
     validate_complete_concept_member_cache(trade_date)
@@ -84,6 +86,37 @@ def sync_catalyst_titles(trade_date: str) -> sync_catalysts.SyncResult:
     for note in result.source_notes:
         print(f"Catalyst source: {note}")
     return result
+
+
+def snapshot_concept_members_if_needed(trade_date: str, token: str) -> None:
+    """如果今天还没有概念成员快照，就跑一次（仅活跃概念）。"""
+    try:
+        con = sqlite3.connect(DB_PATH)
+        report_date = pd.to_datetime(trade_date).strftime("%Y-%m-%d")
+        count = con.execute(
+            "SELECT COUNT(DISTINCT ts_code) FROM concept_member_snapshot WHERE snapshot_date = ?",
+            (report_date,),
+        ).fetchone()[0]
+        con.close()
+        if count >= 100:
+            print(f"概念成员快照已存在({count}个概念)，跳过")
+            return
+        print(f"概念成员快照缺失(仅有{count}个)，开始拉取活跃概念...")
+        codes = snapshot_concept_members.get_active_concept_codes(
+            sqlite3.connect(DB_PATH), lookback_days=30
+        )
+        print(f"  活跃概念: {len(codes)}个")
+        pro = daily_review.build_tushare_client(token)
+        con = sqlite3.connect(DB_PATH)
+        snapshot_concept_members.create_table(con)
+        result = snapshot_concept_members.snapshot_concept_members(
+            con, codes, report_date, pro
+        )
+        snapshot_concept_members.generate_change_log(con, report_date)
+        con.close()
+        print(f"  快照完成: saved={result['saved']}, errors={result['errors']}")
+    except Exception as exc:  # noqa: BLE001
+        print(f"概念成员快照跳过: {exc}")
 
 
 def load_dotenv(path: Path) -> None:
