@@ -213,7 +213,7 @@ def validate_complete_concept_cache(trade_date: str) -> None:
             from concept_daily d
             join concept_basic b on b.ts_code = d.ts_code
             where d.trade_date = ?
-              and b.idx_type = '概念板块'
+              and b.idx_type in ('概念板块', 'THS', '매쿡겼욥')
             """,
             (report_date,),
         ).fetchone()[0]
@@ -223,7 +223,7 @@ def validate_complete_concept_cache(trade_date: str) -> None:
             from concept_daily d
             join concept_basic b on b.ts_code = d.ts_code
             where d.trade_date = ?
-              and b.idx_type = '概念板块'
+              and b.idx_type in ('概念板块', 'THS', '매쿡겼욥')
               and (d.pct_change is null or d.up_num is null or d.down_num is null)
             """,
             (report_date,),
@@ -246,7 +246,7 @@ def validate_complete_concept_member_cache(trade_date: str) -> None:
             from concept_member cm
             join concept_basic cb on cb.ts_code = cm.ts_code
             where cm.trade_date = ?
-              and cb.idx_type = '概念板块'
+              and cb.idx_type in ('概念板块', 'THS', '매쿡겼욥')
             """,
             (report_date,),
         ).fetchone()[0]

@@ -14,6 +14,7 @@ sys.path.insert(0, str(BASE / "scripts"))
 import analyze_2024_mainline_blind_replay as industry_replay  # noqa: E402
 import generate_daily_review as daily_review  # noqa: E402
 import validate_mainline_early_detection as validation  # noqa: E402
+from research_run_cards import build_validation_run_card, write_json  # noqa: E402
 
 
 DEFAULT_REPORT_DIR = BASE / "reports" / "concept_blind_replay_2024_now"
@@ -80,6 +81,28 @@ def main() -> None:
     )
     out = report_dir / "concept_blind_replay_report_2024_now.md"
     out.write_text(report, encoding="utf-8")
+    write_json(
+        report_dir / "run_card.json",
+        build_validation_run_card(
+            run_id=f"concept_blind_replay_{actual_start.date()}_{end.date()}",
+            validation_target="concept_mainline_blind_replay",
+            start_date=actual_start.date().isoformat(),
+            end_date=end.date().isoformat(),
+            sample_count=len(samples),
+            key_results=_summary_key_results(summary, CORE_GROUP),
+            conclusion="概念维度用于补充主题识别和共振复核，不改变行业主线评级。",
+            control_groups=["random10", "daily_top10", "ret20_top10", "breadth_top10"],
+            output_files=[
+                "concept_validation_samples.csv",
+                "concept_group_summary.csv",
+                "concept_blind_replay_signals.csv",
+                "concept_theme_replay.csv",
+                "concept_theme_summary.csv",
+                "concept_major_captures.csv",
+                "concept_blind_replay_report_2024_now.md",
+            ],
+        ),
+    )
     print(out)
 
 
@@ -101,6 +124,21 @@ def add_theme(frame: pd.DataFrame) -> pd.DataFrame:
         for concept in concepts:
             mapping[concept] = theme
     out["theme"] = out["industry"].map(mapping).fillna("其他")
+    return out
+
+
+def _summary_key_results(summary: pd.DataFrame, group: str) -> dict:
+    if summary.empty or "group" not in summary.columns:
+        return {}
+    match = summary[summary["group"] == group]
+    if match.empty:
+        return {}
+    row = match.iloc[0]
+    out = {"group": group}
+    for col in ["samples", "win_rate_40d", "avg_excess_40d", "avg_peak_ret_40d"]:
+        if col in row.index:
+            value = row[col]
+            out[col] = None if pd.isna(value) else float(value) if isinstance(value, (int, float, np.floating)) else value
     return out
 
 
@@ -129,6 +167,17 @@ def build_theme_replay(signals: pd.DataFrame) -> pd.DataFrame:
 
 def summarize_themes(signals: pd.DataFrame) -> pd.DataFrame:
     rows = []
+    columns = ["theme", "samples"]
+    for horizon in [20, 40, 60]:
+        columns.extend(
+            [
+                f"avg_peak_ret_{horizon}d",
+                f"median_peak_ret_{horizon}d",
+                f"avg_days_to_peak_{horizon}d",
+                f"avg_ret_{horizon}d",
+                f"avg_excess_{horizon}d",
+            ]
+        )
     for theme, frame in signals.groupby("theme"):
         if theme == "其他":
             continue
@@ -141,7 +190,9 @@ def summarize_themes(signals: pd.DataFrame) -> pd.DataFrame:
             row[f"avg_ret_{horizon}d"] = valid[f"ret_{horizon}d"].mean() if not valid.empty else np.nan
             row[f"avg_excess_{horizon}d"] = valid[f"excess_{horizon}d"].mean() if not valid.empty else np.nan
         rows.append(row)
-    return pd.DataFrame(rows).sort_values("theme")
+    if not rows:
+        return pd.DataFrame(columns=columns)
+    return pd.DataFrame(rows, columns=columns).sort_values("theme")
 
 
 def render_report(

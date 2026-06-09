@@ -10,6 +10,7 @@ requires-python = ">=3.9"
 dependencies = [
   "numpy>=1.23",
   "pandas>=1.5",
+  "scipy>=1.11",
   "akshare>=1.13",
   "tushare>=1.4",
 ]

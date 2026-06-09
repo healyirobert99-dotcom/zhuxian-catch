@@ -17,6 +17,8 @@ sys.path.insert(0, str(BASE / "src"))
 
 from ashare_a_plus.etf_map import format_etf_proxy, lookup_etf_code  # noqa: E402
 from ashare_a_plus.sqlite_store import SQLiteStore  # noqa: E402
+from research_run_cards import MAINLINE_RULE_VERSION, build_daily_run_card, write_json  # noqa: E402
+from update_shadow_mainline_account import update_shadow_account  # noqa: E402
 
 DB_PATH = BASE / "data" / "a_stock_selector.sqlite3"
 REPORT_DIR = BASE / "reports" / "daily_review"
@@ -28,6 +30,7 @@ SNAPSHOT_DIR = REPORT_DIR / "snapshots"
 LIFECYCLE_CACHE_DIR = REPORT_DIR / "lifecycle_cache"
 MARKET_SNAPSHOT_DIR = REPORT_DIR / "market_snapshots"
 INDEX_CACHE_DIR = REPORT_DIR / "index_cache"
+RUN_CARD_DIR = REPORT_DIR / "run_cards"
 LIFECYCLE_CACHE_VERSION = 1
 MIN_DAILY_ROWS = 3000
 MIN_AVG_AMOUNT_20D = 30_000_000
@@ -159,10 +162,31 @@ def generate_daily_report(
     REPORT_DIR.mkdir(parents=True, exist_ok=True)
     out = REPORT_DIR / f"a_share_daily_review_{report_date}.md"
     out_lifecycle = REPORT_DIR / f"a_share_daily_review_{report_date}_lifecycle.md"
+    html_out = REPORT_DIR / f"a_share_daily_review_{report_date}.html"
     out.write_text(md, encoding="utf-8")
     out_lifecycle.write_text(md, encoding="utf-8")
     save_lifecycle_snapshot(report_date, lifecycle)
     save_market_snapshot(report_date, market)
+    run_card = build_daily_run_card(
+        report_date=report_date,
+        market=market,
+        lifecycle=lifecycle,
+        concept_lifecycle=concept_lifecycle,
+        recent_review=recent_review,
+        catalyst_review=catalyst_review,
+        output_files={
+            "markdown": str(out.relative_to(BASE)),
+            "markdown_lifecycle": str(out_lifecycle.relative_to(BASE)),
+            "html": str(html_out.relative_to(BASE)),
+            "index": str((REPORT_DIR / "index.html").relative_to(BASE)),
+        },
+    )
+    write_json(RUN_CARD_DIR / f"run_card_{report_date}.json", run_card)
+    try:
+        shadow_path, shadow_total, shadow_new = update_shadow_account(report_date, report_date)
+        print(f"shadow observations: {shadow_path} total={shadow_total} new={shadow_new}")
+    except Exception as exc:  # noqa: BLE001
+        print(f"shadow observation update failed; daily report is still generated: {exc}")
     print(out)
     print(out_lifecycle)
     return [out, out_lifecycle]
@@ -511,7 +535,7 @@ def load_concept_data(trade_date: str) -> pd.DataFrame:
             from concept_daily d
             join concept_basic b on b.ts_code = d.ts_code
             where d.trade_date >= ? and d.trade_date <= ?
-              and b.idx_type = '概念板块'
+              and b.idx_type in ('概念板块', 'THS', '매쿡겼욥')
             order by d.ts_code, d.trade_date
             """,
             con,
@@ -678,9 +702,18 @@ def build_concept_lifecycle(report_date: str, market_score: float) -> dict[str, 
         lifecycle = raw_lifecycle_views(empty)
         lifecycle["status"] = "insufficient"
         return lifecycle
-    lifecycle = industry_lifecycle_from_metrics(metrics, report_date)
+    report_ts = pd.Timestamp(report_date)
+    available_dates = metrics.loc[metrics["date"] <= report_ts, "date"].dropna()
+    if available_dates.empty:
+        empty = pd.DataFrame()
+        lifecycle = raw_lifecycle_views(empty)
+        lifecycle["status"] = "insufficient"
+        return lifecycle
+    effective_date = available_dates.max().strftime("%Y-%m-%d")
+    lifecycle = industry_lifecycle_from_metrics(metrics, effective_date)
     enriched = enrich_industry_view(lifecycle, pd.DataFrame(), market_score)
     enriched["status"] = "ok"
+    enriched["data_date"] = effective_date
     return enriched
 
 
@@ -728,7 +761,7 @@ def load_concept_industry_mapping(report_date: str) -> dict[str, str]:
               on sb.ts_code = cm.con_code
               or sb.symbol = substr(cm.con_code, 1, 6)
             where cm.trade_date = ?
-              and cb.idx_type = '概念板块'
+              and cb.idx_type in ('概念板块', 'THS', '매쿡겼욥')
               and sb.industry is not null
             group by cb.name, sb.industry
             order by cb.name, member_count desc
@@ -1138,6 +1171,19 @@ def industry_risk_note(row: pd.Series) -> str:
 
 def enrich_industry_view(lifecycle: dict[str, pd.DataFrame], snap: pd.DataFrame, market_score: float) -> dict[str, pd.DataFrame]:
     all_rows = lifecycle["all"].copy()
+    if all_rows.empty:
+        enriched = dict(lifecycle)
+        for key in [
+            "mainline_overview",
+            "grade_a",
+            "grade_b",
+            "grade_c",
+            "stable_revaluation",
+            "retreat_mainline",
+            "suspect_miss",
+        ]:
+            enriched[key] = all_rows.copy()
+        return enriched
     valuation = industry_valuation_temperature(snap)
     all_rows["valuation_temp"] = all_rows["industry"].map(valuation).fillna("财务数据待补")
     all_rows["driver_type"] = all_rows.apply(mainline_driver_type, axis=1)

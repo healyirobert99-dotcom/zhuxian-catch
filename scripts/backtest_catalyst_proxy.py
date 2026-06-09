@@ -15,6 +15,8 @@ import numpy as np
 import pandas as pd
 import scipy.stats as stats
 
+from research_run_cards import build_validation_run_card, write_json
+
 BASE = Path(__file__).resolve().parents[1]
 DB_PATH = BASE / "data" / "a_stock_selector.sqlite3"
 SAMPLES_PATH = (
@@ -438,6 +440,23 @@ def main() -> None:
     print("8. 生成报告...")
     report = generate_report(bt, breakdown, threshold=3.0)
     (OUT_DIR / "catalyst_proxy_backtest_report.md").write_text(report, encoding="utf-8")
+    write_json(
+        OUT_DIR / "run_card.json",
+        build_validation_run_card(
+            run_id="catalyst_proxy_backtest_abs_pct_v0.1",
+            validation_target="catalyst_proxy_abs_pct",
+            start_date=str(signals["date"].min().date()) if "date" in signals.columns and not signals.empty else "",
+            end_date=str(signals["date"].max().date()) if "date" in signals.columns and not signals.empty else "",
+            sample_count=len(signals),
+            key_results=_catalyst_key_results(bt),
+            conclusion="概念绝对涨跌幅代理未体现稳定正向增量；真实催化层仍应区分正面催化与风险冲击。",
+            control_groups=["without_catalyst_proxy"],
+            output_files=[
+                "catalyst_proxy_backtest_report.md",
+                "catalyst_proxy_signals.csv",
+            ],
+        ),
+    )
 
     cols = [
         "date", "industry", "signal_type", "env_score", "grade",
@@ -454,6 +473,24 @@ def main() -> None:
 
     print(f"\n=== 完成 ===")
     print(report)
+
+
+def _catalyst_key_results(bt: pd.DataFrame) -> dict:
+    if bt.empty:
+        return {}
+    target = bt[(bt["abs_pct_threshold"] == 3.0) & (bt["horizon"] == 40)]
+    if target.empty:
+        return {}
+    row = target.iloc[0]
+    return {
+        "abs_pct_threshold": 3.0,
+        "horizon": 40,
+        "n_with": int(row.get("n_with", 0)),
+        "wr_with": float(row.get("wr_with", np.nan)),
+        "wr_without": float(row.get("wr_without", np.nan)),
+        "excess_diff": float(row.get("excess_diff", np.nan)),
+        "p_value": float(row.get("p_value", np.nan)),
+    }
 
 
 if __name__ == "__main__":

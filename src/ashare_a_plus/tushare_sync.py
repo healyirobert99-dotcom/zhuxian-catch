@@ -238,7 +238,7 @@ class TushareSync:
                 """
                 select ts_code, name, idx_type
                 from concept_basic
-                where idx_type = '概念板块'
+                where idx_type in ('概念板块', 'THS', '매쿡겼욥')
                 order by ts_code
                 """,
                 con,
@@ -250,7 +250,7 @@ class TushareSync:
                     """
                     select ts_code, name, idx_type
                     from concept_basic
-                    where idx_type = '概念板块'
+                    where idx_type in ('概念板块', 'THS', '매쿡겼욥')
                     order by ts_code
                     """,
                     con,

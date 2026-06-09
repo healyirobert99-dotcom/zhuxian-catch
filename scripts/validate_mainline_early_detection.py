@@ -13,6 +13,7 @@ BASE = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(BASE / "scripts"))
 
 import generate_daily_review as daily_review  # noqa: E402
+from research_run_cards import build_validation_run_card, write_json  # noqa: E402
 
 
 DEFAULT_REPORT_DIR = BASE / "reports" / "mainline_early_detection_validation_5y"
@@ -51,7 +52,42 @@ def main() -> None:
         render_report(samples, summary, year_summary, signal_summary, start, end),
         encoding="utf-8",
     )
+    write_json(
+        report_dir / "run_card.json",
+        build_validation_run_card(
+            run_id=f"early_mainline_validation_{start}_{end}",
+            validation_target="early_mainline_detection",
+            start_date=start,
+            end_date=end,
+            sample_count=len(samples),
+            key_results=_summary_key_results(summary, "early_core_env45"),
+            conclusion="早期主线核心信号用于日报优先复核；结果只验证行业 beta，不生成交易建议。",
+            control_groups=["random10", "daily_top10", "ret20_top10", "breadth_top10"],
+            output_files=[
+                "early_mainline_samples.csv",
+                "early_mainline_summary.csv",
+                "early_mainline_year_summary.csv",
+                "early_mainline_signal_type_summary.csv",
+                "early_mainline_validation_report.md",
+            ],
+        ),
+    )
     print(report_dir / "early_mainline_validation_report.md")
+
+
+def _summary_key_results(summary: pd.DataFrame, group: str) -> dict:
+    if summary.empty or "group" not in summary.columns:
+        return {}
+    match = summary[summary["group"] == group]
+    if match.empty:
+        return {}
+    row = match.iloc[0]
+    out = {"group": group}
+    for col in ["samples", "win_rate_40d", "avg_excess_40d", "avg_peak_ret_40d"]:
+        if col in row.index:
+            value = row[col]
+            out[col] = None if pd.isna(value) else float(value) if isinstance(value, (int, float, np.floating)) else value
+    return out
 
 
 def parse_args() -> argparse.Namespace:
