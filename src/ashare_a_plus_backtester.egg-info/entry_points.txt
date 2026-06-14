@@ -1,0 +1,2 @@
+[console_scripts]
+ashare-a-plus = ashare_a_plus.cli:main

@@ -35,6 +35,7 @@ LIFECYCLE_CACHE_VERSION = 1
 MIN_DAILY_ROWS = 3000
 MIN_AVG_AMOUNT_20D = 30_000_000
 MIN_CONCEPT_DAILY_ROWS = 100
+MIN_CONCEPT_MEMBER_MAPPING_ROWS = 10_000
 SUSPECT_MISS_RET_60D_THRESHOLD = 0.25
 REQUIRED_INDICES = {"上证指数", "沪深300", "中证500", "创业板指"}
 
@@ -535,7 +536,7 @@ def load_concept_data(trade_date: str) -> pd.DataFrame:
             from concept_daily d
             join concept_basic b on b.ts_code = d.ts_code
             where d.trade_date >= ? and d.trade_date <= ?
-              and b.idx_type in ('概念板块', 'THS', '매쿡겼욥')
+              and b.idx_type in ('概念板块', 'THS')
             order by d.ts_code, d.trade_date
             """,
             con,
@@ -746,10 +747,19 @@ def enrich_concept_industry_resonance(
 
 def load_concept_industry_mapping(report_date: str) -> dict[str, str]:
     with sqlite3.connect(DB_PATH) as con:
-        latest = con.execute(
-            "select max(trade_date) from concept_member where trade_date <= ?",
-            (report_date,),
-        ).fetchone()[0]
+        latest_row = con.execute(
+            """
+            select trade_date
+            from concept_member
+            where trade_date <= ?
+            group by trade_date
+            having count(*) >= ?
+            order by trade_date desc
+            limit 1
+            """,
+            (report_date, MIN_CONCEPT_MEMBER_MAPPING_ROWS),
+        ).fetchone()
+        latest = latest_row[0] if latest_row else None
         if not latest:
             return {}
         rows = pd.read_sql_query(
@@ -761,7 +771,7 @@ def load_concept_industry_mapping(report_date: str) -> dict[str, str]:
               on sb.ts_code = cm.con_code
               or sb.symbol = substr(cm.con_code, 1, 6)
             where cm.trade_date = ?
-              and cb.idx_type in ('概念板块', 'THS', '매쿡겼욥')
+              and cb.idx_type in ('概念板块', 'THS')
               and sb.industry is not null
             group by cb.name, sb.industry
             order by cb.name, member_count desc

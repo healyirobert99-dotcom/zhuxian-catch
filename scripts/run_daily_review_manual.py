@@ -22,7 +22,7 @@ import sync_catalysts  # noqa: E402
 DB_PATH = BASE / "data" / "a_stock_selector.sqlite3"
 REPORT_DIR = BASE / "reports" / "daily_review"
 STRICT_MIN_DAILY_ROWS = 5000
-STRICT_MIN_CONCEPT_MEMBER_ROWS = 1000
+STRICT_MIN_CONCEPT_MEMBER_ROWS = 10_000
 REQUIRED_INDEX_CODES = {
     "上证指数": "000001.SH",
     "沪深300": "000300.SH",
@@ -213,7 +213,7 @@ def validate_complete_concept_cache(trade_date: str) -> None:
             from concept_daily d
             join concept_basic b on b.ts_code = d.ts_code
             where d.trade_date = ?
-              and b.idx_type in ('概念板块', 'THS', '매쿡겼욥')
+              and b.idx_type in ('概念板块', 'THS')
             """,
             (report_date,),
         ).fetchone()[0]
@@ -223,7 +223,7 @@ def validate_complete_concept_cache(trade_date: str) -> None:
             from concept_daily d
             join concept_basic b on b.ts_code = d.ts_code
             where d.trade_date = ?
-              and b.idx_type in ('概念板块', 'THS', '매쿡겼욥')
+              and b.idx_type in ('概念板块', 'THS')
               and (d.pct_change is null or d.up_num is null or d.down_num is null)
             """,
             (report_date,),
@@ -240,20 +240,44 @@ def validate_complete_concept_cache(trade_date: str) -> None:
 def validate_complete_concept_member_cache(trade_date: str) -> None:
     report_date = pd.to_datetime(trade_date).strftime("%Y-%m-%d")
     with sqlite3.connect(DB_PATH) as con:
-        count = con.execute(
+        exact_count = con.execute(
             """
             select count(*)
             from concept_member cm
             join concept_basic cb on cb.ts_code = cm.ts_code
             where cm.trade_date = ?
-              and cb.idx_type in ('概念板块', 'THS', '매쿡겼욥')
+              and cb.idx_type in ('概念板块', 'THS')
             """,
             (report_date,),
         ).fetchone()[0]
-    if count < STRICT_MIN_CONCEPT_MEMBER_ROWS:
+        latest_complete = con.execute(
+            """
+            select cm.trade_date, count(*) as rows
+            from concept_member cm
+            join concept_basic cb on cb.ts_code = cm.ts_code
+            where cm.trade_date <= ?
+              and cb.idx_type in ('概念板块', 'THS')
+            group by cm.trade_date
+            having count(*) >= ?
+            order by cm.trade_date desc
+            limit 1
+            """,
+            (report_date, STRICT_MIN_CONCEPT_MEMBER_ROWS),
+        ).fetchone()
+    if exact_count >= STRICT_MIN_CONCEPT_MEMBER_ROWS:
+        return
+    if latest_complete:
+        latest_date, latest_rows = latest_complete
+        print(
+            f"Concept member cache for {report_date} is partial ({exact_count} rows); "
+            f"using latest complete snapshot {latest_date} ({latest_rows} rows) for resonance mapping."
+        )
+        return
+    if exact_count < STRICT_MIN_CONCEPT_MEMBER_ROWS:
         raise SystemExit(
-            f"Incomplete concept_member cache for {report_date}: {count} rows, "
-            f"requires at least {STRICT_MIN_CONCEPT_MEMBER_ROWS}. Refusing to generate report."
+            f"Incomplete concept_member cache for {report_date}: {exact_count} rows, "
+            f"and no earlier complete snapshot with at least {STRICT_MIN_CONCEPT_MEMBER_ROWS} rows. "
+            "Refusing to generate report."
         )
 
 
